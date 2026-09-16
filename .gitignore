@@ -1,0 +1,25 @@
+# Compiled binary
+/oc
+/oc.exe
+
+# Go workspace and build artifacts
+/bin/
+/dist/
+
+# Go test and coverage files
+*.test
+*.out
+*.prof
+
+# macOS
+.DS_Store
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+
+# Local config / secrets
+.env
+.env.local
+*.log
