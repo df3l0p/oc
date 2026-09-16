@@ -2,8 +2,10 @@ package opencodeconfig
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -100,6 +102,48 @@ func TestMergeIsIdempotentAndKeepsOtherProviders(t *testing.T) {
 	}
 	if _, ok := providers["llama-cpp"]; !ok {
 		t.Error("expected llama-cpp provider to be present")
+	}
+}
+
+func TestMergeConcurrentWritesDontDropEachOther(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "opencode.jsonc")
+	if err := os.WriteFile(path, []byte(`{"$schema": "https://opencode.ai/config.json"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	const n = 8
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			key := fmt.Sprintf("provider-%d", i)
+			provider := Provider{NPM: "@ai-sdk/openai-compatible"}
+			if err := Merge(path, key, provider); err != nil {
+				t.Errorf("Merge %d failed: %v", i, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	out, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("output is not valid JSON: %v\n%s", err, out)
+	}
+	providers, ok := got["provider"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected provider map, got %T", got["provider"])
+	}
+	for i := 0; i < n; i++ {
+		key := fmt.Sprintf("provider-%d", i)
+		if _, ok := providers[key]; !ok {
+			t.Errorf("expected %s to survive concurrent merges, got keys %v", key, providers)
+		}
 	}
 }
 

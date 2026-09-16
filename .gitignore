@@ -19,6 +19,9 @@
 .vscode/
 *.swp
 
+# Claude Code local session state
+.claude/
+
 # Local config / secrets
 .env
 .env.local

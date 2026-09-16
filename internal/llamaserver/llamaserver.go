@@ -1,5 +1,7 @@
 // Package llamaserver starts, health-checks, and stops a llama-server
-// process, and can discover the model it's serving.
+// process, discovers the model it's serving, and tracks which oc processes
+// are currently using a given port so a shared server is only stopped once
+// nobody needs it anymore.
 package llamaserver
 
 import (
@@ -7,7 +9,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"syscall"
 	"time"
 )
@@ -27,13 +31,16 @@ func (o Options) BaseURL() string {
 
 // Process wraps a started llama-server so it can be stopped later.
 type Process struct {
-	cmd *exec.Cmd
+	cmd     *exec.Cmd
+	exited  chan struct{}
+	waitErr error
 }
 
 // Start launches llama-server in the background. Its stdout/stderr are
-// wired to the given writer (typically os.Stderr) so the user sees model
-// load progress. It does not wait for the server to become healthy; call
-// WaitHealthy for that.
+// wired to the given writer (typically a log file, never the shared
+// terminal — opencode's full-screen TUI runs on the same tty and raw log
+// lines would corrupt its rendering). It does not wait for the server to
+// become healthy; call WaitHealthy for that.
 func Start(opts Options, output io.Writer) (*Process, error) {
 	cmd := exec.Command("llama-server",
 		"-hf", opts.Model,
@@ -47,7 +54,13 @@ func Start(opts Options, output io.Writer) (*Process, error) {
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("starting llama-server: %w", err)
 	}
-	return &Process{cmd: cmd}, nil
+
+	p := &Process{cmd: cmd, exited: make(chan struct{})}
+	go func() {
+		p.waitErr = cmd.Wait()
+		close(p.exited)
+	}()
+	return p, nil
 }
 
 // gracePeriod is how long Stop waits for a clean shutdown (SIGTERM) before
@@ -66,15 +79,12 @@ func (p *Process) Stop() error {
 	}
 	pgid := -p.cmd.Process.Pid
 
-	done := make(chan error, 1)
-	go func() { done <- p.cmd.Wait() }()
-
 	if err := syscall.Kill(pgid, syscall.SIGTERM); err != nil && err != syscall.ESRCH {
 		return fmt.Errorf("sending SIGTERM to llama-server: %w", err)
 	}
 
 	select {
-	case <-done:
+	case <-p.exited:
 		return nil
 	case <-time.After(gracePeriod):
 	}
@@ -82,7 +92,7 @@ func (p *Process) Stop() error {
 	if err := syscall.Kill(pgid, syscall.SIGKILL); err != nil && err != syscall.ESRCH {
 		return fmt.Errorf("sending SIGKILL to llama-server: %w", err)
 	}
-	<-done
+	<-p.exited
 	return nil
 }
 
@@ -98,14 +108,21 @@ func IsHealthy(baseURL string) bool {
 	return resp.StatusCode == http.StatusOK
 }
 
-// WaitHealthy polls /health until it succeeds or timeout elapses.
-func WaitHealthy(baseURL string, timeout time.Duration) error {
+// WaitHealthy polls /health until it succeeds, proc exits, or timeout
+// elapses. Watching proc.exited means a fast crash (bad model name, missing
+// HF auth, no usable backend) is reported immediately instead of only after
+// the full timeout.
+func WaitHealthy(baseURL string, timeout time.Duration, proc *Process) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		if IsHealthy(baseURL) {
 			return nil
 		}
-		time.Sleep(500 * time.Millisecond)
+		select {
+		case <-proc.exited:
+			return fmt.Errorf("llama-server exited before becoming healthy: %w", proc.waitErr)
+		case <-time.After(500 * time.Millisecond):
+		}
 	}
 	return fmt.Errorf("llama-server at %s did not become healthy within %s", baseURL, timeout)
 }
@@ -125,6 +142,11 @@ func DiscoverModelID(baseURL string) (string, error) {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("%s/v1/models returned %s: %s", baseURL, resp.Status, body)
+	}
+
 	var parsed modelsResponse
 	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
 		return "", fmt.Errorf("parsing /v1/models response: %w", err)
@@ -135,9 +157,43 @@ func DiscoverModelID(baseURL string) (string, error) {
 	return parsed.Data[0].ID, nil
 }
 
-// AnotherOpencodeRunning reports whether an opencode process is currently
-// running anywhere on the machine.
-func AnotherOpencodeRunning() bool {
-	err := exec.Command("pgrep", "-x", "opencode").Run()
-	return err == nil
+// registryDir is where oc processes register themselves as users of the
+// llama-server on the given port, so a shared server started by one oc
+// instance is only stopped once every oc instance using that port is gone.
+// A directory of one file per PID needs no locking: create/remove are
+// atomic, and listing tolerates concurrent add/remove.
+func registryDir(port int) string {
+	return filepath.Join(os.TempDir(), fmt.Sprintf("oc-llama-server-%d.sessions", port))
+}
+
+// Register records this process as a user of the llama-server on the given
+// port. Call the returned func when done, usually via defer.
+func Register(port int) (func(), error) {
+	dir := registryDir(port)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("creating session registry: %w", err)
+	}
+	self := filepath.Join(dir, fmt.Sprintf("%d", os.Getpid()))
+	f, err := os.Create(self)
+	if err != nil {
+		return nil, fmt.Errorf("registering session: %w", err)
+	}
+	f.Close()
+	return func() { os.Remove(self) }, nil
+}
+
+// OtherSessionsActive reports whether any oc process other than this one is
+// still registered as using the llama-server on the given port.
+func OtherSessionsActive(port int) bool {
+	entries, err := os.ReadDir(registryDir(port))
+	if err != nil {
+		return false
+	}
+	self := fmt.Sprintf("%d", os.Getpid())
+	for _, e := range entries {
+		if e.Name() != self {
+			return true
+		}
+	}
+	return false
 }

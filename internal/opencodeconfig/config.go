@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 )
 
 // Provider is the shape opencode expects for a custom OpenAI-compatible
@@ -22,7 +23,27 @@ type Provider struct {
 // sets provider[providerKey] to the given block, and writes the result back.
 // All other keys in the file are left untouched. Comments in the original
 // file are not preserved.
+//
+// The read-modify-write is guarded by an flock on a sibling ".lock" file, so
+// two oc processes racing on the same config don't silently drop one
+// another's changes, and the write itself goes through a temp file + rename
+// so a crash mid-write can't leave the config truncated.
 func Merge(path, providerKey string, provider Provider) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("creating %s: %w", dir, err)
+	}
+
+	lock, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return fmt.Errorf("opening lock file: %w", err)
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		return fmt.Errorf("locking %s: %w", path, err)
+	}
+	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		if !os.IsNotExist(err) {
@@ -56,11 +77,25 @@ func Merge(path, providerKey string, provider Provider) error {
 	}
 	out = append(out, '\n')
 
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("creating %s: %w", filepath.Dir(path), err)
+	tmp, err := os.CreateTemp(dir, ".oc-config-*.tmp")
+	if err != nil {
+		return fmt.Errorf("creating temp file in %s: %w", dir, err)
 	}
-	if err := os.WriteFile(path, out, 0o644); err != nil {
-		return fmt.Errorf("writing %s: %w", path, err)
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath) // no-op once the rename below succeeds
+
+	if _, err := tmp.Write(out); err != nil {
+		tmp.Close()
+		return fmt.Errorf("writing %s: %w", tmpPath, err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("closing %s: %w", tmpPath, err)
+	}
+	if err := os.Chmod(tmpPath, 0o644); err != nil {
+		return fmt.Errorf("setting permissions on %s: %w", tmpPath, err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("replacing %s: %w", path, err)
 	}
 	return nil
 }

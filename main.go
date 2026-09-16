@@ -45,6 +45,15 @@ func run() error {
 	opts := llamaserver.Options{Model: *model, Host: *host, Port: *port}
 	baseURL := opts.BaseURL()
 
+	// Register as a user of this port's llama-server for the whole run, so
+	// that if it's shared with another concurrent oc instance, whichever one
+	// started it only stops it once every registered instance is gone.
+	unregister, err := llamaserver.Register(*port)
+	if err != nil {
+		return err
+	}
+	defer unregister()
+
 	var proc *llamaserver.Process
 	startedByUs := false
 
@@ -58,8 +67,10 @@ func run() error {
 		// llama-server's log lines must not go to os.Stderr: it shares this
 		// terminal with opencode's full-screen TUI, and raw log output
 		// interleaved with opencode's screen redraws corrupts the display.
+		// Mode 0600 since the log may include request/model details tied to
+		// the user's session.
 		logPath := filepath.Join(os.TempDir(), fmt.Sprintf("oc-llama-server-%d.log", *port))
-		logFile, err := os.Create(logPath)
+		logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 		if err != nil {
 			return fmt.Errorf("creating llama-server log file: %w", err)
 		}
@@ -71,9 +82,9 @@ func run() error {
 			return err
 		}
 		startedByUs = true
-		if err := llamaserver.WaitHealthy(baseURL, 2*time.Minute); err != nil {
+		if err := llamaserver.WaitHealthy(baseURL, 2*time.Minute, proc); err != nil {
 			_ = proc.Stop()
-			return err
+			return fmt.Errorf("%w (see log: %s)", err, logPath)
 		}
 	}
 
@@ -101,6 +112,11 @@ func run() error {
 
 	opencodeCmd := exec.Command("opencode", ".")
 	opencodeCmd.Dir = cwd
+	// opencode only reads *configPath by default when it's left at its
+	// default value (opencode's own default global config path). Setting
+	// OPENCODE_CONFIG makes it read the file we just merged into even when
+	// --opencode-config is overridden to something else.
+	opencodeCmd.Env = append(os.Environ(), "OPENCODE_CONFIG="+*configPath)
 	opencodeCmd.Stdin = os.Stdin
 	opencodeCmd.Stdout = os.Stdout
 	opencodeCmd.Stderr = os.Stderr
@@ -117,8 +133,8 @@ func run() error {
 	runErr := opencodeCmd.Run()
 
 	if startedByUs {
-		if llamaserver.AnotherOpencodeRunning() {
-			fmt.Fprintln(os.Stderr, "oc: another opencode is still running, leaving llama-server up")
+		if llamaserver.OtherSessionsActive(*port) {
+			fmt.Fprintln(os.Stderr, "oc: another oc session is still using llama-server, leaving it up")
 		} else {
 			fmt.Fprintln(os.Stderr, "oc: stopping llama-server")
 			if err := proc.Stop(); err != nil {
