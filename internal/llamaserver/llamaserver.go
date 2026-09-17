@@ -54,16 +54,15 @@ func FindCommand() ([]string, error) {
 	return nil, fmt.Errorf(`neither "llama" nor "llama-server" found on PATH`)
 }
 
-// Start launches the llama.cpp server in the background. Its stdout/stderr
-// are wired to the given writer (typically a log file, never the shared
-// terminal — opencode's full-screen TUI runs on the same tty and raw log
-// lines would corrupt its rendering). It does not wait for the server to
-// become healthy; call WaitHealthy for that.
-func Start(opts Options, output io.Writer) (*Process, error) {
-	command, err := FindCommand()
-	if err != nil {
-		return nil, err
-	}
+// Start launches the llama.cpp server in the background, using command as
+// resolved by FindCommand (callers typically call FindCommand once up front
+// to fail fast before doing other setup, then pass the result here rather
+// than re-resolving it). Its stdout/stderr are wired to the given writer
+// (typically a log file, never the shared terminal — opencode's full-screen
+// TUI runs on the same tty and raw log lines would corrupt its rendering).
+// It does not wait for the server to become healthy; call WaitHealthy for
+// that.
+func Start(command []string, opts Options, output io.Writer) (*Process, error) {
 	args := append(command[1:], "-hf", opts.Model, "--host", opts.Host, "--port", fmt.Sprintf("%d", opts.Port))
 	cmd := exec.Command(command[0], args...)
 	cmd.Stdout = output

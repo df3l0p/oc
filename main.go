@@ -75,7 +75,8 @@ func run() error {
 	if llamaserver.IsHealthy(baseURL) {
 		fmt.Fprintf(os.Stderr, "oc: reusing existing llama-server at %s\n", baseURL)
 	} else {
-		if _, err := llamaserver.FindCommand(); err != nil {
+		command, err := llamaserver.FindCommand()
+		if err != nil {
 			return err
 		}
 
@@ -92,7 +93,7 @@ func run() error {
 		defer logFile.Close()
 
 		fmt.Fprintf(os.Stderr, "oc: starting llama-server with model %s on %s (logs: %s)\n", cfg.model, baseURL, logPath)
-		proc, err = llamaserver.Start(opts, logFile)
+		proc, err = llamaserver.Start(command, opts, logFile)
 		if err != nil {
 			return err
 		}
