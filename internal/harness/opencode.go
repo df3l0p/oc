@@ -4,15 +4,25 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 
 	"github.com/df3l0p/oc/internal/opencodeconfig"
 )
 
-// Opencode drives opencode (github.com/sst/opencode) as a Harness.
+// Opencode drives opencode (github.com/sst/opencode) as a Harness. Its
+// config path is fixed to opencode's own default global config location, so
+// oc always merges into and points opencode at the same file it would use
+// on its own.
 type Opencode struct {
-	// ConfigPath is the opencode config file to merge the local provider
-	// into and to point opencode at via OPENCODE_CONFIG.
-	ConfigPath string
+	configPath string
+}
+
+func newOpencode() (Harness, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("resolving home directory: %w", err)
+	}
+	return Opencode{configPath: filepath.Join(home, ".config", "opencode", "opencode.jsonc")}, nil
 }
 
 func (o Opencode) Available() error {
@@ -33,17 +43,17 @@ func (o Opencode) Configure(providerKey, baseURL string, modelIDs []string) erro
 		Options: map[string]interface{}{"baseURL": baseURL + "/v1"},
 		Models:  models,
 	}
-	return opencodeconfig.Merge(o.ConfigPath, providerKey, provider)
+	return opencodeconfig.Merge(o.configPath, providerKey, provider)
 }
 
 func (o Opencode) Run(dir string) error {
 	cmd := exec.Command("opencode", ".")
 	cmd.Dir = dir
-	// opencode only reads ConfigPath by default when it's left at opencode's
-	// own default global config path. Setting OPENCODE_CONFIG makes it read
-	// the file Configure just merged into even when ConfigPath points
-	// somewhere else.
-	cmd.Env = append(os.Environ(), "OPENCODE_CONFIG="+o.ConfigPath)
+	// opencode only reads configPath by default when it's left at opencode's
+	// own default global config path, which is exactly what configPath is
+	// here. OPENCODE_CONFIG is set anyway so this keeps working even if a
+	// future oc option makes configPath configurable again.
+	cmd.Env = append(os.Environ(), "OPENCODE_CONFIG="+o.configPath)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

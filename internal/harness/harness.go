@@ -25,15 +25,15 @@ type Harness interface {
 }
 
 // registry maps a harness name, as accepted by oc's --harness flag, to a
-// constructor for it. configPath is the harness-specific config file to
-// merge the local provider into (its meaning is up to each harness).
-var registry = map[string]func(configPath string) Harness{
-	"opencode": func(configPath string) Harness { return Opencode{ConfigPath: configPath} },
+// constructor for it. Each harness owns its own config path (e.g. opencode's
+// default global config location) rather than taking one from oc's flags.
+var registry = map[string]func() (Harness, error){
+	"opencode": newOpencode,
 }
 
 // New looks up name in the registry and constructs it, or returns an error
 // listing the available names.
-func New(name, configPath string) (Harness, error) {
+func New(name string) (Harness, error) {
 	ctor, ok := registry[name]
 	if !ok {
 		names := make([]string, 0, len(registry))
@@ -43,5 +43,5 @@ func New(name, configPath string) (Harness, error) {
 		sort.Strings(names)
 		return nil, fmt.Errorf("unknown harness %q (available: %s)", name, strings.Join(names, ", "))
 	}
-	return ctor(configPath), nil
+	return ctor()
 }

@@ -21,14 +21,13 @@ const providerKey = "llama-cpp"
 // globals or ad-hoc locals in run()) so flag parsing stays in one place and
 // run() takes a plain value.
 type cliConfig struct {
-	model      string
-	host       string
-	port       int
-	harness    string
-	configPath string
+	model   string
+	host    string
+	port    int
+	harness string
 }
 
-func parseFlags(defaultConfigPath string) cliConfig {
+func parseFlags() cliConfig {
 	var cfg cliConfig
 	flag.StringVar(&cfg.model, "model", "ggml-org/Qwen2.5-Coder-7B-Instruct-GGUF:Q4_K_M", "model passed to llama-server's -hf flag")
 	flag.StringVar(&cfg.host, "host", "127.0.0.1", "llama-server host")
@@ -36,7 +35,6 @@ func parseFlags(defaultConfigPath string) cliConfig {
 	flag.StringVar(&cfg.harness, "harness", "opencode", "coding agent harness to run (available: opencode)")
 	// TODO: to keep in mind, but I'd like to have a --sandbox flag for the harness to run on a container
 	// mounts home cwd with container
-	flag.StringVar(&cfg.configPath, "opencode-config", defaultConfigPath, "path to the harness's config file")
 	flag.Parse()
 	return cfg
 }
@@ -49,14 +47,9 @@ func main() {
 }
 
 func run() error {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return fmt.Errorf("resolving home directory: %w", err)
-	}
-	defaultConfigPath := filepath.Join(home, ".config", "opencode", "opencode.jsonc")
-	cfg := parseFlags(defaultConfigPath)
+	cfg := parseFlags()
 
-	h, err := harness.New(cfg.harness, cfg.configPath)
+	h, err := harness.New(cfg.harness)
 	if err != nil {
 		return err
 	}
