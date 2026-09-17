@@ -47,7 +47,7 @@ This starts (or reuses) a llama-server serving the default model, merges a
 
 | Flag        | Default                                          | Description                                     |
 |-------------|---------------------------------------------------|--------------------------------------------------|
-| `-model`    | `ggml-org/Qwen2.5-Coder-7B-Instruct-GGUF:Q4_K_M`  | Model passed to llama-server's `-hf` flag        |
+| `-model`    | `unsloth/Qwen3.6-35B-A3B-GGUF:Q4_K_M`             | Model passed to llama-server's `-hf` flag        |
 | `-host`     | `127.0.0.1`                                       | llama-server host                                |
 | `-port`     | `8080`                                            | llama-server port                                |
 | `-harness`  | `opencode`                                        | Coding agent to run                              |

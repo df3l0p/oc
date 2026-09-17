@@ -29,7 +29,7 @@ type cliConfig struct {
 
 func parseFlags() cliConfig {
 	var cfg cliConfig
-	flag.StringVar(&cfg.model, "model", "ggml-org/Qwen2.5-Coder-7B-Instruct-GGUF:Q4_K_M", "model passed to llama-server's -hf flag")
+	flag.StringVar(&cfg.model, "model", "unsloth/Qwen3.6-35B-A3B-GGUF:Q4_K_M", "model passed to llama-server's -hf flag")
 	flag.StringVar(&cfg.host, "host", "127.0.0.1", "llama-server host")
 	flag.IntVar(&cfg.port, "port", 8080, "llama-server port")
 	flag.StringVar(&cfg.harness, "harness", "opencode", "coding agent harness to run (available: opencode)")
