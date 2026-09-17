@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"syscall"
 	"time"
 )
@@ -36,17 +37,34 @@ type Process struct {
 	waitErr error
 }
 
-// Start launches llama-server in the background. Its stdout/stderr are
-// wired to the given writer (typically a log file, never the shared
-// terminal — opencode's full-screen TUI runs on the same tty and raw log
-// lines would corrupt its rendering). It does not wait for the server to
-// become healthy; call WaitHealthy for that.
-func Start(opts Options, output io.Writer) (*Process, error) {
-	cmd := exec.Command("llama-server",
-		"-hf", opts.Model,
-		"--host", opts.Host,
-		"--port", fmt.Sprintf("%d", opts.Port),
-	)
+// FindCommand locates the llama.cpp server on PATH, preferring the newer
+// unified "llama serve" subcommand and falling back to the older standalone
+// "llama-server" binary for installs that haven't picked up the newer CLI.
+// The returned slice is the command and leading arguments to exec.
+func FindCommand() ([]string, error) {
+	if _, err := exec.LookPath("llama"); err == nil {
+		return []string{"llama", "serve"}, nil
+	}
+	if _, err := exec.LookPath("llama-server"); err == nil {
+		return []string{"llama-server"}, nil
+	}
+	if runtime.GOOS == "darwin" {
+		return nil, fmt.Errorf(`neither "llama" nor "llama-server" found on PATH (brew install llama.cpp provides both)`)
+	}
+	return nil, fmt.Errorf(`neither "llama" nor "llama-server" found on PATH`)
+}
+
+// Start launches the llama.cpp server in the background, using command as
+// resolved by FindCommand (callers typically call FindCommand once up front
+// to fail fast before doing other setup, then pass the result here rather
+// than re-resolving it). Its stdout/stderr are wired to the given writer
+// (typically a log file, never the shared terminal — opencode's full-screen
+// TUI runs on the same tty and raw log lines would corrupt its rendering).
+// It does not wait for the server to become healthy; call WaitHealthy for
+// that.
+func Start(command []string, opts Options, output io.Writer) (*Process, error) {
+	args := append(command[1:], "-hf", opts.Model, "--host", opts.Host, "--port", fmt.Sprintf("%d", opts.Port))
+	cmd := exec.Command(command[0], args...)
 	cmd.Stdout = output
 	cmd.Stderr = output
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -133,28 +151,36 @@ type modelsResponse struct {
 	} `json:"data"`
 }
 
-// DiscoverModelID queries /v1/models and returns the first model's id.
-func DiscoverModelID(baseURL string) (string, error) {
+// DiscoverModels queries /v1/models and returns every model id the server
+// reports, in the order it lists them. A llama-server started with a single
+// -hf model normally reports just that one model, but the server can also
+// be configured to serve several at once, and every one of them should be
+// usable from the harness, not just the first.
+func DiscoverModels(baseURL string) ([]string, error) {
 	client := http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Get(baseURL + "/v1/models")
 	if err != nil {
-		return "", fmt.Errorf("querying %s/v1/models: %w", baseURL, err)
+		return nil, fmt.Errorf("querying %s/v1/models: %w", baseURL, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("%s/v1/models returned %s: %s", baseURL, resp.Status, body)
+		return nil, fmt.Errorf("%s/v1/models returned %s: %s", baseURL, resp.Status, body)
 	}
 
 	var parsed modelsResponse
 	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
-		return "", fmt.Errorf("parsing /v1/models response: %w", err)
+		return nil, fmt.Errorf("parsing /v1/models response: %w", err)
 	}
 	if len(parsed.Data) == 0 {
-		return "", fmt.Errorf("no models reported by %s/v1/models", baseURL)
+		return nil, fmt.Errorf("no models reported by %s/v1/models", baseURL)
 	}
-	return parsed.Data[0].ID, nil
+	ids := make([]string, len(parsed.Data))
+	for i, m := range parsed.Data {
+		ids[i] = m.ID
+	}
+	return ids, nil
 }
 
 // registryDir is where oc processes register themselves as users of the

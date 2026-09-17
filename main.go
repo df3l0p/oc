@@ -6,17 +6,38 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"syscall"
 	"time"
 
+	"github.com/df3l0p/oc/internal/harness"
 	"github.com/df3l0p/oc/internal/llamaserver"
-	"github.com/df3l0p/oc/internal/opencodeconfig"
 )
 
 const providerKey = "llama-cpp"
+
+// cliConfig holds oc's flags. Parsed into a struct (rather than package
+// globals or ad-hoc locals in run()) so flag parsing stays in one place and
+// run() takes a plain value.
+type cliConfig struct {
+	model   string
+	host    string
+	port    int
+	harness string
+}
+
+func parseFlags() cliConfig {
+	var cfg cliConfig
+	flag.StringVar(&cfg.model, "model", "unsloth/Qwen3.6-35B-A3B-GGUF:Q4_K_M", "model passed to llama-server's -hf flag")
+	flag.StringVar(&cfg.host, "host", "127.0.0.1", "llama-server host")
+	flag.IntVar(&cfg.port, "port", 8080, "llama-server port")
+	flag.StringVar(&cfg.harness, "harness", "opencode", "coding agent harness to run (available: opencode)")
+	// TODO: to keep in mind, but I'd like to have a --sandbox flag for the harness to run on a container
+	// mounts home cwd with container
+	flag.Parse()
+	return cfg
+}
 
 func main() {
 	if err := run(); err != nil {
@@ -26,29 +47,23 @@ func main() {
 }
 
 func run() error {
-	home, err := os.UserHomeDir()
+	cfg := parseFlags()
+
+	h, err := harness.New(cfg.harness)
 	if err != nil {
-		return fmt.Errorf("resolving home directory: %w", err)
+		return err
 	}
-	defaultConfigPath := filepath.Join(home, ".config", "opencode", "opencode.jsonc")
-
-	model := flag.String("model", "ggml-org/Qwen2.5-Coder-7B-Instruct-GGUF:Q4_K_M", "model passed to llama-server's -hf flag")
-	host := flag.String("host", "127.0.0.1", "llama-server host")
-	port := flag.Int("port", 8080, "llama-server port")
-	configPath := flag.String("opencode-config", defaultConfigPath, "path to opencode's config file")
-	flag.Parse()
-
-	if _, err := exec.LookPath("opencode"); err != nil {
-		return fmt.Errorf("opencode not found on PATH: %w", err)
+	if err := h.Available(); err != nil {
+		return err
 	}
 
-	opts := llamaserver.Options{Model: *model, Host: *host, Port: *port}
+	opts := llamaserver.Options{Model: cfg.model, Host: cfg.host, Port: cfg.port}
 	baseURL := opts.BaseURL()
 
 	// Register as a user of this port's llama-server for the whole run, so
 	// that if it's shared with another concurrent oc instance, whichever one
 	// started it only stops it once every registered instance is gone.
-	unregister, err := llamaserver.Register(*port)
+	unregister, err := llamaserver.Register(cfg.port)
 	if err != nil {
 		return err
 	}
@@ -60,8 +75,9 @@ func run() error {
 	if llamaserver.IsHealthy(baseURL) {
 		fmt.Fprintf(os.Stderr, "oc: reusing existing llama-server at %s\n", baseURL)
 	} else {
-		if _, err := exec.LookPath("llama-server"); err != nil {
-			return fmt.Errorf("llama-server not found on PATH: %w", err)
+		command, err := llamaserver.FindCommand()
+		if err != nil {
+			return err
 		}
 
 		// llama-server's log lines must not go to os.Stderr: it shares this
@@ -69,15 +85,15 @@ func run() error {
 		// interleaved with opencode's screen redraws corrupts the display.
 		// Mode 0600 since the log may include request/model details tied to
 		// the user's session.
-		logPath := filepath.Join(os.TempDir(), fmt.Sprintf("oc-llama-server-%d.log", *port))
+		logPath := filepath.Join(os.TempDir(), fmt.Sprintf("oc-llama-server-%d.log", cfg.port))
 		logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 		if err != nil {
 			return fmt.Errorf("creating llama-server log file: %w", err)
 		}
 		defer logFile.Close()
 
-		fmt.Fprintf(os.Stderr, "oc: starting llama-server with model %s on %s (logs: %s)\n", *model, baseURL, logPath)
-		proc, err = llamaserver.Start(opts, logFile)
+		fmt.Fprintf(os.Stderr, "oc: starting llama-server with model %s on %s (logs: %s)\n", cfg.model, baseURL, logPath)
+		proc, err = llamaserver.Start(command, opts, logFile)
 		if err != nil {
 			return err
 		}
@@ -88,20 +104,12 @@ func run() error {
 		}
 	}
 
-	modelID, err := llamaserver.DiscoverModelID(baseURL)
+	modelIDs, err := llamaserver.DiscoverModels(baseURL)
 	if err != nil {
-		return fmt.Errorf("discovering model id: %w", err)
+		return fmt.Errorf("discovering models: %w", err)
 	}
 
-	provider := opencodeconfig.Provider{
-		NPM:     "@ai-sdk/openai-compatible",
-		Name:    "llama-server (local)",
-		Options: map[string]interface{}{"baseURL": baseURL + "/v1"},
-		Models: map[string]interface{}{
-			modelID: map[string]interface{}{"name": modelID + " (local)"},
-		},
-	}
-	if err := opencodeconfig.Merge(*configPath, providerKey, provider); err != nil {
+	if err := h.Configure(providerKey, baseURL, modelIDs); err != nil {
 		return fmt.Errorf("updating opencode config: %w", err)
 	}
 
@@ -109,17 +117,6 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("resolving current directory: %w", err)
 	}
-
-	opencodeCmd := exec.Command("opencode", ".")
-	opencodeCmd.Dir = cwd
-	// opencode only reads *configPath by default when it's left at its
-	// default value (opencode's own default global config path). Setting
-	// OPENCODE_CONFIG makes it read the file we just merged into even when
-	// --opencode-config is overridden to something else.
-	opencodeCmd.Env = append(os.Environ(), "OPENCODE_CONFIG="+*configPath)
-	opencodeCmd.Stdin = os.Stdin
-	opencodeCmd.Stdout = os.Stdout
-	opencodeCmd.Stderr = os.Stderr
 
 	// opencode shares oc's foreground process group, so Ctrl+C delivers
 	// SIGINT to both. Without this, Go's default disposition kills oc
@@ -130,10 +127,10 @@ func run() error {
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sigCh)
 
-	runErr := opencodeCmd.Run()
+	runErr := h.Run(cwd)
 
 	if startedByUs {
-		if llamaserver.OtherSessionsActive(*port) {
+		if llamaserver.OtherSessionsActive(cfg.port) {
 			fmt.Fprintln(os.Stderr, "oc: another oc session is still using llama-server, leaving it up")
 		} else {
 			fmt.Fprintln(os.Stderr, "oc: stopping llama-server")

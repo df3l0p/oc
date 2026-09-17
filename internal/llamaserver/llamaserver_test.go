@@ -1,8 +1,13 @@
 package llamaserver
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -17,6 +22,63 @@ func TestOptionsBaseURL(t *testing.T) {
 func TestIsHealthyFalseWhenNothingListening(t *testing.T) {
 	if IsHealthy("http://127.0.0.1:1") {
 		t.Error("expected IsHealthy to be false for an unreachable server")
+	}
+}
+
+func TestFindCommandNotFoundOnEmptyPath(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+
+	_, err := FindCommand()
+	if err == nil {
+		t.Fatal("expected an error when neither binary is on PATH")
+	}
+	if !strings.Contains(err.Error(), "llama") || !strings.Contains(err.Error(), "llama-server") {
+		t.Errorf("expected error to mention both binary names, got: %v", err)
+	}
+	if runtime.GOOS == "darwin" && !strings.Contains(err.Error(), "brew") {
+		t.Errorf("expected macOS error to mention brew, got: %v", err)
+	}
+}
+
+func TestDiscoverModelsReturnsAllIDs(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(modelsResponse{
+			Data: []struct {
+				ID string `json:"id"`
+			}{{ID: "model-a"}, {ID: "model-b"}},
+		})
+	}))
+	defer srv.Close()
+
+	ids, err := DiscoverModels(srv.URL)
+	if err != nil {
+		t.Fatalf("DiscoverModels: %v", err)
+	}
+	want := []string{"model-a", "model-b"}
+	if len(ids) != len(want) || ids[0] != want[0] || ids[1] != want[1] {
+		t.Errorf("got %v, want %v", ids, want)
+	}
+}
+
+func TestDiscoverModelsErrorsOnEmptyData(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(modelsResponse{})
+	}))
+	defer srv.Close()
+
+	if _, err := DiscoverModels(srv.URL); err == nil {
+		t.Error("expected an error when the server reports no models")
+	}
+}
+
+func TestDiscoverModelsErrorsOnNon200(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	if _, err := DiscoverModels(srv.URL); err == nil {
+		t.Error("expected an error on a non-200 response")
 	}
 }
 
