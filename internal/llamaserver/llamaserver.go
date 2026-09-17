@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"syscall"
 	"time"
 )
@@ -47,7 +48,10 @@ func FindCommand() ([]string, error) {
 	if _, err := exec.LookPath("llama-server"); err == nil {
 		return []string{"llama-server"}, nil
 	}
-	return nil, fmt.Errorf(`neither "llama" nor "llama-server" found on PATH (on macOS, "brew install llama.cpp" provides both)`)
+	if runtime.GOOS == "darwin" {
+		return nil, fmt.Errorf(`neither "llama" nor "llama-server" found on PATH (brew install llama.cpp provides both)`)
+	}
+	return nil, fmt.Errorf(`neither "llama" nor "llama-server" found on PATH`)
 }
 
 // Start launches the llama.cpp server in the background. Its stdout/stderr
@@ -148,28 +152,36 @@ type modelsResponse struct {
 	} `json:"data"`
 }
 
-// DiscoverModelID queries /v1/models and returns the first model's id.
-func DiscoverModelID(baseURL string) (string, error) {
+// DiscoverModels queries /v1/models and returns every model id the server
+// reports, in the order it lists them. A llama-server started with a single
+// -hf model normally reports just that one model, but the server can also
+// be configured to serve several at once, and every one of them should be
+// usable from the harness, not just the first.
+func DiscoverModels(baseURL string) ([]string, error) {
 	client := http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Get(baseURL + "/v1/models")
 	if err != nil {
-		return "", fmt.Errorf("querying %s/v1/models: %w", baseURL, err)
+		return nil, fmt.Errorf("querying %s/v1/models: %w", baseURL, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("%s/v1/models returned %s: %s", baseURL, resp.Status, body)
+		return nil, fmt.Errorf("%s/v1/models returned %s: %s", baseURL, resp.Status, body)
 	}
 
 	var parsed modelsResponse
 	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
-		return "", fmt.Errorf("parsing /v1/models response: %w", err)
+		return nil, fmt.Errorf("parsing /v1/models response: %w", err)
 	}
 	if len(parsed.Data) == 0 {
-		return "", fmt.Errorf("no models reported by %s/v1/models", baseURL)
+		return nil, fmt.Errorf("no models reported by %s/v1/models", baseURL)
 	}
-	return parsed.Data[0].ID, nil
+	ids := make([]string, len(parsed.Data))
+	for i, m := range parsed.Data {
+		ids[i] = m.ID
+	}
+	return ids, nil
 }
 
 // registryDir is where oc processes register themselves as users of the
