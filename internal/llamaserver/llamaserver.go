@@ -36,17 +36,32 @@ type Process struct {
 	waitErr error
 }
 
-// Start launches llama-server in the background. Its stdout/stderr are
-// wired to the given writer (typically a log file, never the shared
+// FindCommand locates the llama.cpp server on PATH, preferring the newer
+// unified "llama serve" subcommand and falling back to the older standalone
+// "llama-server" binary for installs that haven't picked up the newer CLI.
+// The returned slice is the command and leading arguments to exec.
+func FindCommand() ([]string, error) {
+	if _, err := exec.LookPath("llama"); err == nil {
+		return []string{"llama", "serve"}, nil
+	}
+	if _, err := exec.LookPath("llama-server"); err == nil {
+		return []string{"llama-server"}, nil
+	}
+	return nil, fmt.Errorf(`neither "llama" nor "llama-server" found on PATH (on macOS, "brew install llama.cpp" provides both)`)
+}
+
+// Start launches the llama.cpp server in the background. Its stdout/stderr
+// are wired to the given writer (typically a log file, never the shared
 // terminal — opencode's full-screen TUI runs on the same tty and raw log
 // lines would corrupt its rendering). It does not wait for the server to
 // become healthy; call WaitHealthy for that.
 func Start(opts Options, output io.Writer) (*Process, error) {
-	cmd := exec.Command("llama-server",
-		"-hf", opts.Model,
-		"--host", opts.Host,
-		"--port", fmt.Sprintf("%d", opts.Port),
-	)
+	command, err := FindCommand()
+	if err != nil {
+		return nil, err
+	}
+	args := append(command[1:], "-hf", opts.Model, "--host", opts.Host, "--port", fmt.Sprintf("%d", opts.Port))
+	cmd := exec.Command(command[0], args...)
 	cmd.Stdout = output
 	cmd.Stderr = output
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

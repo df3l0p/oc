@@ -35,6 +35,8 @@ func run() error {
 	model := flag.String("model", "ggml-org/Qwen2.5-Coder-7B-Instruct-GGUF:Q4_K_M", "model passed to llama-server's -hf flag")
 	host := flag.String("host", "127.0.0.1", "llama-server host")
 	port := flag.Int("port", 8080, "llama-server port")
+	// TODO: to keep in mind, but I'd like to have a --sandbox flag for the harness to run on a container
+	// mounts home cwd with container
 	configPath := flag.String("opencode-config", defaultConfigPath, "path to opencode's config file")
 	flag.Parse()
 
@@ -60,8 +62,8 @@ func run() error {
 	if llamaserver.IsHealthy(baseURL) {
 		fmt.Fprintf(os.Stderr, "oc: reusing existing llama-server at %s\n", baseURL)
 	} else {
-		if _, err := exec.LookPath("llama-server"); err != nil {
-			return fmt.Errorf("llama-server not found on PATH: %w", err)
+		if _, err := llamaserver.FindCommand(); err != nil {
+			return err
 		}
 
 		// llama-server's log lines must not go to os.Stderr: it shares this
@@ -121,15 +123,12 @@ func run() error {
 	opencodeCmd.Stdout = os.Stdout
 	opencodeCmd.Stderr = os.Stderr
 
-	// opencode shares oc's foreground process group, so Ctrl+C delivers
-	// SIGINT to both. Without this, Go's default disposition kills oc
-	// immediately, skipping the llama-server cleanup below. Notifying (and
-	// not reacting to) the signal here just stops oc from dying on its own;
-	// opencode still receives and handles the signal directly.
+	// Ensures the parent (who launches the harness) is not killed and llama-server can be dealt properly and then leaves.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sigCh)
 
+	// block here until opencodeCmd is done
 	runErr := opencodeCmd.Run()
 
 	if startedByUs {
