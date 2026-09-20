@@ -46,8 +46,10 @@ func (o Opencode) Configure(providerKey, baseURL string, modelIDs []string) erro
 	return opencodeconfig.Merge(o.configPath, providerKey, provider)
 }
 
-func (o Opencode) Run(dir string) error {
-	cmd := exec.Command("opencode", ".")
+func (o Opencode) Run(dir, providerKey, modelID string) error {
+	// -m selects the model for this session only, leaving the user's default
+	// model in their config untouched.
+	cmd := exec.Command("opencode", "-m", providerKey+"/"+modelID, ".")
 	cmd.Dir = dir
 	// opencode only reads configPath by default when it's left at opencode's
 	// own default global config path, which is exactly what configPath is
