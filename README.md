@@ -7,10 +7,13 @@ it, and launches the agent in the current directory.
 Concretely, running `oc` in a project:
 
 1. Checks whether a `llama-server`/`llama serve` instance is already
-   healthy on the target host/port; if not, starts one with `-hf <model>`.
-2. Discovers the model(s) it's actually serving and merges an
-   OpenAI-compatible provider entry for them into the agent's config.
-3. Runs the agent in the current directory.
+   healthy on the target host/port; if not, starts one in router mode (no
+   model flag), which serves every model in the llama.cpp cache and loads
+   them on demand.
+2. Discovers the served models and merges an OpenAI-compatible provider
+   entry listing all of them into the agent's config. If `-model` isn't
+   among them, it's downloaded first (`llama download`, unified CLI only).
+3. Runs the agent in the current directory with `-model` selected.
 4. On exit, stops the `llama-server` it started — unless another `oc`
    process is still using it, in which case it's left running.
 
@@ -47,7 +50,7 @@ This starts (or reuses) a llama-server serving the default model, merges a
 
 | Flag        | Default                                          | Description                                     |
 |-------------|---------------------------------------------------|--------------------------------------------------|
-| `-model`    | `unsloth/Qwen3.6-35B-A3B-GGUF:Q4_K_M`             | Model passed to llama-server's `-hf` flag        |
+| `-model`    | `unsloth/Qwen3.6-35B-A3B-GGUF:Q4_K_M`             | Model to select in the agent (quant optional; downloaded if not cached) |
 | `-host`     | `127.0.0.1`                                       | llama-server host                                |
 | `-port`     | `8080`                                            | llama-server port                                |
 | `-harness`  | `opencode`                                        | Coding agent to run                              |
@@ -66,6 +69,12 @@ reuses it instead of starting a second one. Each running `oc` process
 registers itself as a user of that port; when an `oc` that started the
 server exits, it only stops the server once no other `oc` process is still
 registered against it.
+
+Because the server runs in router mode, sessions sharing it can each pick a
+different `-model`. A server started some other way with a fixed model
+(`-hf`/`-m`) only serves that model; `oc -model <other>` against it fails
+with an error rather than silently using the wrong model — stop it or use
+`-port`.
 
 ## Notes
 

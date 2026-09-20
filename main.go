@@ -29,7 +29,7 @@ type cliConfig struct {
 
 func parseFlags() cliConfig {
 	var cfg cliConfig
-	flag.StringVar(&cfg.model, "model", "unsloth/Qwen3.6-35B-A3B-GGUF:Q4_K_M", "model passed to llama-server's -hf flag")
+	flag.StringVar(&cfg.model, "model", "unsloth/Qwen3.6-35B-A3B-GGUF:Q4_K_M", "model to use in the harness (downloaded if not cached); every cached model is made available")
 	flag.StringVar(&cfg.host, "host", "127.0.0.1", "llama-server host")
 	flag.IntVar(&cfg.port, "port", 8080, "llama-server port")
 	flag.StringVar(&cfg.harness, "harness", "opencode", "coding agent harness to run (available: opencode)")
@@ -57,7 +57,7 @@ func run() error {
 		return err
 	}
 
-	opts := llamaserver.Options{Model: cfg.model, Host: cfg.host, Port: cfg.port}
+	opts := llamaserver.Options{Host: cfg.host, Port: cfg.port}
 	baseURL := opts.BaseURL()
 
 	// Register as a user of this port's llama-server for the whole run, so
@@ -70,7 +70,6 @@ func run() error {
 	defer unregister()
 
 	var proc *llamaserver.Process
-	startedByUs := false
 
 	if llamaserver.IsHealthy(baseURL) {
 		fmt.Fprintf(os.Stderr, "oc: reusing existing llama-server at %s\n", baseURL)
@@ -92,14 +91,18 @@ func run() error {
 		}
 		defer logFile.Close()
 
-		fmt.Fprintf(os.Stderr, "oc: starting llama-server with model %s on %s (logs: %s)\n", cfg.model, baseURL, logPath)
+		fmt.Fprintf(os.Stderr, "oc: starting llama-server on %s (logs: %s)\n", baseURL, logPath)
 		proc, err = llamaserver.Start(command, opts, logFile)
 		if err != nil {
 			return err
 		}
-		startedByUs = true
+		if err := llamaserver.RecordServer(cfg.port, proc.Pid()); err != nil {
+			_ = proc.Stop()
+			return fmt.Errorf("recording llama-server pid: %w", err)
+		}
 		if err := llamaserver.WaitHealthy(baseURL, 2*time.Minute, proc); err != nil {
 			_ = proc.Stop()
+			_ = llamaserver.StopRecordedServer(cfg.port) // clears the record
 			return fmt.Errorf("%w (see log: %s)", err, logPath)
 		}
 	}
@@ -107,6 +110,22 @@ func run() error {
 	modelIDs, err := llamaserver.DiscoverModels(baseURL)
 	if err != nil {
 		return fmt.Errorf("discovering models: %w", err)
+	}
+
+	model, ok := llamaserver.ResolveModel(modelIDs, cfg.model)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "oc: %s is not served by %s, trying to download it\n", cfg.model, baseURL)
+		if err := llamaserver.Download(cfg.model, os.Stderr); err != nil {
+			return err
+		}
+		modelIDs, err = llamaserver.DiscoverModels(baseURL)
+		if err != nil {
+			return fmt.Errorf("discovering models: %w", err)
+		}
+		model, ok = llamaserver.ResolveModel(modelIDs, cfg.model)
+		if !ok {
+			return fmt.Errorf("model %q is still not served by %s after download; if that llama-server was started with a fixed model (-hf/-m) or before the download, stop it (or use -port) so oc can start a fresh one", cfg.model, baseURL)
+		}
 	}
 
 	if err := h.Configure(providerKey, baseURL, modelIDs); err != nil {
@@ -124,20 +143,26 @@ func run() error {
 	// not reacting to) the signal here just stops oc from dying on its own;
 	// opencode still receives and handles the signal directly.
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	// SIGHUP (terminal closed) is included for the same reason, so cleanup
+	// still runs once opencode exits.
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer signal.Stop(sigCh)
 
-	runErr := h.Run(cwd)
+	runErr := h.Run(cwd, providerKey, model)
 
-	if startedByUs {
-		if llamaserver.OtherSessionsActive(cfg.port) {
-			fmt.Fprintln(os.Stderr, "oc: another oc session is still using llama-server, leaving it up")
-		} else {
-			fmt.Fprintln(os.Stderr, "oc: stopping llama-server")
-			if err := proc.Stop(); err != nil {
-				fmt.Fprintln(os.Stderr, "oc: failed to stop llama-server:", err)
-			}
+	// The last oc session out stops an oc-started server, even if a different
+	// session started it. Servers oc didn't start have no record and are left
+	// alone.
+	if llamaserver.OtherSessionsActive(cfg.port) {
+		fmt.Fprintln(os.Stderr, "oc: another oc session is still using llama-server, leaving it up")
+	} else if proc != nil {
+		fmt.Fprintln(os.Stderr, "oc: stopping llama-server")
+		if err := proc.Stop(); err != nil {
+			fmt.Fprintln(os.Stderr, "oc: failed to stop llama-server:", err)
 		}
+		_ = llamaserver.StopRecordedServer(cfg.port) // clears the record
+	} else if err := llamaserver.StopRecordedServer(cfg.port); err != nil {
+		fmt.Fprintln(os.Stderr, "oc: failed to stop llama-server:", err)
 	}
 
 	return runErr

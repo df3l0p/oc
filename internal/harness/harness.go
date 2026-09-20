@@ -19,9 +19,10 @@ type Harness interface {
 	// Configure points the harness at baseURL under providerKey, offering
 	// the given model ids.
 	Configure(providerKey, baseURL string, modelIDs []string) error
-	// Run launches the harness in dir, wiring stdio to the current process
-	// and blocking until it exits.
-	Run(dir string) error
+	// Run launches the harness in dir with modelID (one of the ids given to
+	// Configure, served under providerKey) selected, wiring stdio to the
+	// current process and blocking until it exits.
+	Run(dir, providerKey, modelID string) error
 }
 
 // registry maps a harness name, as accepted by oc's --harness flag, to a
