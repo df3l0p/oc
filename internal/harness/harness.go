@@ -38,8 +38,8 @@ type Options struct {
 	Sandbox bool
 	// Image is the sandbox container image; empty means DefaultSandboxImage.
 	Image string
-	// Build builds the sandbox image from the embedded Dockerfile rather than
-	// pulling it.
+	// Build rebuilds the sandbox image from the embedded Dockerfile even if it
+	// already exists locally. A missing image is always built, never pulled.
 	Build bool
 }
 

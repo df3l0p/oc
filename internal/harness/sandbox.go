@@ -15,9 +15,9 @@ import (
 	"github.com/df3l0p/oc/internal/opencodeconfig"
 )
 
-// DefaultSandboxImage is the container image used by -sandbox unless
-// overridden with -image.
-const DefaultSandboxImage = "ghcr.io/df3l0p/oc-sandbox:latest"
+// DefaultSandboxImage is the local tag oc builds the sandbox image under
+// unless overridden with -image. It is never pulled from a registry.
+const DefaultSandboxImage = "oc-sandbox:latest"
 
 const (
 	// containerHost is how a container reaches the host's network namespace.
@@ -68,29 +68,15 @@ func (s *Sandbox) Available() error {
 	return nil
 }
 
-// Prepare makes sure the sandbox image exists locally: with -build it builds
-// from the embedded Dockerfile; otherwise it uses a local image if present,
-// else pulls, and falls back to building only for the default image (whose
-// registry copy may not exist yet).
+// Prepare makes sure the sandbox image exists locally. oc never pulls the
+// sandbox image from a registry (supply-chain hygiene): it uses a local image
+// if present, and otherwise builds it from the embedded Dockerfile, failing if
+// the build fails. With -build it rebuilds even if the image exists.
 func (s *Sandbox) Prepare() error {
-	if s.build {
-		return s.buildImage()
-	}
-	if exec.Command("docker", "image", "inspect", s.image).Run() == nil {
+	if !s.build && exec.Command("docker", "image", "inspect", s.image).Run() == nil {
 		return nil
 	}
-	fmt.Fprintf(os.Stderr, "oc: pulling %s\n", s.image)
-	pull := exec.Command("docker", "pull", s.image)
-	pull.Stdout, pull.Stderr = os.Stderr, os.Stderr
-	pullErr := pull.Run()
-	if pullErr == nil {
-		return nil
-	}
-	if s.image == DefaultSandboxImage {
-		fmt.Fprintf(os.Stderr, "oc: pull failed (%v), building %s from the embedded Dockerfile\n", pullErr, s.image)
-		return s.buildImage()
-	}
-	return fmt.Errorf("image %s not found locally and pull failed: %w (use -build to build it from oc's Dockerfile)", s.image, pullErr)
+	return s.buildImage()
 }
 
 func (s *Sandbox) buildImage() error {
@@ -162,7 +148,9 @@ func (s *Sandbox) runArgs(name, dir, providerKey, modelID string, tty bool) []st
 		flags = "-it"
 	}
 	return []string{
-		"run", "--rm", flags,
+		// --pull=never: Prepare already ensured the image locally; never let
+		// docker fetch one from a registry behind our back.
+		"run", "--rm", "--pull=never", flags,
 		"--name", name,
 		"--add-host", containerHost + ":host-gateway",
 		"--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),

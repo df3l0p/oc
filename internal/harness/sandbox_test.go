@@ -11,7 +11,7 @@ import (
 
 // fakeDocker puts a `docker` shell script on PATH that appends each
 // invocation's argv (one line per call) to the returned log file. exitFor maps
-// a docker subcommand (e.g. "pull") to the exit status it should return;
+// a docker subcommand (e.g. "build") to the exit status it should return;
 // anything not listed exits 0.
 func fakeDocker(t *testing.T, exitFor map[string]int) (logPath string) {
 	t.Helper()
@@ -114,7 +114,7 @@ func TestSandboxRunArgs(t *testing.T) {
 	args := s.runArgs("oc-1-aa", "/work/proj", "llama-cpp", "m1", false)
 	joined := strings.Join(args, " ")
 	for _, want := range []string{
-		"run --rm -i --name oc-1-aa",
+		"run --rm --pull=never -i --name oc-1-aa",
 		"--add-host host.docker.internal:host-gateway",
 		"-v /work/proj:/workspace",
 		"-v /tmp/gen.jsonc:/etc/oc/opencode.jsonc:ro",
@@ -151,7 +151,7 @@ func TestSandboxRunUsesUniqueContainerNames(t *testing.T) {
 	for _, c := range calls(t, logPath) {
 		f := strings.Fields(c)
 		if len(f) > 3 && f[0] == "run" {
-			names = append(names, f[4]) // run --rm -i --name <name>
+			names = append(names, f[5]) // run --rm --pull=never -i --name <name>
 		}
 	}
 	if len(names) != 2 || names[0] == names[1] {
@@ -207,33 +207,32 @@ func TestSandboxPrepare(t *testing.T) {
 		wantErr   string
 	}{
 		{
-			name:      "image present locally: no pull",
+			name:      "image present locally: nothing to do",
 			opts:      Options{Sandbox: true},
 			wantCalls: []string{"image inspect"},
 		},
 		{
-			name:      "missing then pulled",
+			name:      "missing: built, never pulled",
 			opts:      Options{Sandbox: true},
 			exit:      map[string]int{"image": 1},
-			wantCalls: []string{"image inspect", "pull"},
+			wantCalls: []string{"image inspect", "build"},
 		},
 		{
-			name:      "default image pull fails: falls back to build",
-			opts:      Options{Sandbox: true},
-			exit:      map[string]int{"image": 1, "pull": 1},
-			wantCalls: []string{"image inspect", "pull", "build"},
-		},
-		{
-			name:      "custom image pull fails: error, no build",
+			name:      "custom image missing: built under that name",
 			opts:      Options{Sandbox: true, Image: "my/img"},
-			exit:      map[string]int{"image": 1, "pull": 1},
-			wantCalls: []string{"image inspect", "pull"},
-			wantErr:   "use -build",
+			exit:      map[string]int{"image": 1},
+			wantCalls: []string{"image inspect", "build -t my/img"},
 		},
 		{
-			name:      "-build skips inspect and pull",
-			opts:      Options{Sandbox: true, Build: true, Image: "my/img"},
-			exit:      map[string]int{"image": 1, "pull": 1},
+			name:      "build failure is an error",
+			opts:      Options{Sandbox: true},
+			exit:      map[string]int{"image": 1, "build": 1},
+			wantCalls: []string{"image inspect", "build"},
+			wantErr:   "building",
+		},
+		{
+			name:      "-build rebuilds without inspecting",
+			opts:      Options{Sandbox: true, Build: true},
 			wantCalls: []string{"build"},
 		},
 	}

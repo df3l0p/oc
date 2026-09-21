@@ -58,7 +58,7 @@ func parseFlags() (cliConfig, error) {
 	flag.StringVar(&cfg.harness, "harness", "opencode", "coding agent harness to run (available: opencode)")
 	flag.BoolVar(&cfg.sandbox, "sandbox", false, "run the harness in a Docker container that mounts the current directory")
 	flag.StringVar(&cfg.image, "image", "", "sandbox container image (default "+harness.DefaultSandboxImage+"); requires -sandbox")
-	flag.BoolVar(&cfg.build, "build", false, "build the sandbox image from the embedded Dockerfile instead of pulling it; requires -sandbox")
+	flag.BoolVar(&cfg.build, "build", false, "rebuild the sandbox image from the embedded Dockerfile even if it exists (it is built when missing, never pulled); requires -sandbox")
 	flag.Parse()
 	return cfg, cfg.validate()
 }

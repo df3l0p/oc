@@ -55,8 +55,8 @@ This starts (or reuses) a llama-server serving the default model, merges a
 | `-port`     | `8080`                                            | llama-server port                                |
 | `-harness`  | `opencode`                                        | Coding agent to run                              |
 | `-sandbox`  | off                                               | Run the agent in a Docker container (see below)  |
-| `-image`    | `ghcr.io/df3l0p/oc-sandbox:latest`                | Sandbox image (requires `-sandbox`)              |
-| `-build`    | off                                               | Build the sandbox image from the embedded Dockerfile instead of pulling (requires `-sandbox`) |
+| `-image`    | `oc-sandbox:latest`                               | Local sandbox image name; built if missing, never pulled (requires `-sandbox`) |
+| `-build`    | off                                               | Rebuild the sandbox image from the embedded Dockerfile even if it exists (requires `-sandbox`) |
 
 Each harness owns its own config path internally (opencode's is its default
 global config, `~/.config/opencode/opencode.jsonc`) — there's no flag for it.
@@ -90,10 +90,13 @@ your ownership. Only `docker` is needed on the host (not opencode).
 - **Config:** `oc` generates a private copy of your opencode config with the
   `llama-cpp` provider's `baseURL` rewritten for the container and mounts it
   read-only. Your real config is not modified.
-- **Image:** the default image is pulled if it isn't local; if the pull fails
-  the embedded `Dockerfile` (`internal/harness/Dockerfile`) is built
-  instead. With a custom `-image`, a failed pull is an error; add `-build`
-  to build it locally. `-build` always builds.
+- **Image:** `oc` never pulls the sandbox image from a registry. If the
+  image (default `oc-sandbox:latest`) isn't present locally, it is built
+  from the embedded `Dockerfile` (`internal/harness/Dockerfile`), and a
+  build failure is an error. `-build` forces a rebuild. Note the build
+  itself still fetches the `node:22-slim` base image, apt packages and the
+  `opencode-ai` npm package; to control that, review or pin them in the
+  Dockerfile, or pre-build your own image and pass `-image`.
 - **Parallel sessions:** each session gets a uniquely named container, and
   any number can share one host llama-server (same lifecycle rules as above).
 - **Network exposure:** so containers can reach it on Linux, `oc` starts
