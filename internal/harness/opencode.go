@@ -17,12 +17,31 @@ type Opencode struct {
 	configPath string
 }
 
-func newOpencode() (Harness, error) {
+func newOpencode(opts Options) (Harness, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("resolving home directory: %w", err)
 	}
-	return Opencode{configPath: filepath.Join(home, ".config", "opencode", "opencode.jsonc")}, nil
+	configPath := filepath.Join(home, ".config", "opencode", "opencode.jsonc")
+	if opts.Sandbox {
+		return newSandbox(opts, configPath), nil
+	}
+	return Opencode{configPath: configPath}, nil
+}
+
+// opencodeProvider builds the provider block that points opencode at a
+// llama-server at baseURL, offering modelIDs.
+func opencodeProvider(baseURL string, modelIDs []string) opencodeconfig.Provider {
+	models := make(map[string]interface{}, len(modelIDs))
+	for _, id := range modelIDs {
+		models[id] = map[string]interface{}{"name": id + " (local)"}
+	}
+	return opencodeconfig.Provider{
+		NPM:     "@ai-sdk/openai-compatible",
+		Name:    "llama-server (local)",
+		Options: map[string]interface{}{"baseURL": baseURL + "/v1"},
+		Models:  models,
+	}
 }
 
 func (o Opencode) Available() error {
@@ -33,17 +52,7 @@ func (o Opencode) Available() error {
 }
 
 func (o Opencode) Configure(providerKey, baseURL string, modelIDs []string) error {
-	models := make(map[string]interface{}, len(modelIDs))
-	for _, id := range modelIDs {
-		models[id] = map[string]interface{}{"name": id + " (local)"}
-	}
-	provider := opencodeconfig.Provider{
-		NPM:     "@ai-sdk/openai-compatible",
-		Name:    "llama-server (local)",
-		Options: map[string]interface{}{"baseURL": baseURL + "/v1"},
-		Models:  models,
-	}
-	return opencodeconfig.Merge(o.configPath, providerKey, provider)
+	return opencodeconfig.Merge(o.configPath, providerKey, opencodeProvider(baseURL, modelIDs))
 }
 
 func (o Opencode) Run(dir, providerKey, modelID string) error {

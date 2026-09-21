@@ -42,7 +42,7 @@ func TestNewOpencodeUsesHomeConfigDir(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	h, err := newOpencode()
+	h, err := newOpencode(Options{})
 	if err != nil {
 		t.Fatalf("newOpencode: %v", err)
 	}

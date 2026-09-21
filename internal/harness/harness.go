@@ -25,16 +25,34 @@ type Harness interface {
 	Run(dir, providerKey, modelID string) error
 }
 
+// Preparer is implemented by harnesses that need setup before the model
+// server starts (e.g. making sure a container image exists), so a failure
+// there doesn't leave a server running for nothing.
+type Preparer interface {
+	Prepare() error
+}
+
+// Options selects how a harness is run.
+type Options struct {
+	// Sandbox runs the agent in a Docker container instead of on the host.
+	Sandbox bool
+	// Image is the sandbox container image; empty means DefaultSandboxImage.
+	Image string
+	// Build rebuilds the sandbox image from the embedded Dockerfile even if it
+	// already exists locally. A missing image is always built, never pulled.
+	Build bool
+}
+
 // registry maps a harness name, as accepted by oc's --harness flag, to a
 // constructor for it. Each harness owns its own config path (e.g. opencode's
 // default global config location) rather than taking one from oc's flags.
-var registry = map[string]func() (Harness, error){
+var registry = map[string]func(Options) (Harness, error){
 	"opencode": newOpencode,
 }
 
 // New looks up name in the registry and constructs it, or returns an error
 // listing the available names.
-func New(name string) (Harness, error) {
+func New(name string, opts Options) (Harness, error) {
 	ctor, ok := registry[name]
 	if !ok {
 		names := make([]string, 0, len(registry))
@@ -44,5 +62,5 @@ func New(name string) (Harness, error) {
 		sort.Strings(names)
 		return nil, fmt.Errorf("unknown harness %q (available: %s)", name, strings.Join(names, ", "))
 	}
-	return ctor()
+	return ctor(opts)
 }
