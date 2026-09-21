@@ -25,18 +25,42 @@ type cliConfig struct {
 	host    string
 	port    int
 	harness string
+	sandbox bool
+	image   string
+	build   bool
 }
 
-func parseFlags() cliConfig {
+const defaultHost = "127.0.0.1"
+
+// validate rejects flag combinations that only make sense with -sandbox.
+func (c cliConfig) validate() error {
+	if !c.sandbox && (c.image != "" || c.build) {
+		return fmt.Errorf("-image and -build require -sandbox")
+	}
+	return nil
+}
+
+// bindHost is the address llama-server listens on. A container can't reach a
+// server bound to the host's loopback (on Linux; Docker Desktop proxies it),
+// so sandbox mode listens on all interfaces unless -host was set explicitly.
+func (c cliConfig) bindHost() string {
+	if c.sandbox && c.host == defaultHost {
+		return "0.0.0.0"
+	}
+	return c.host
+}
+
+func parseFlags() (cliConfig, error) {
 	var cfg cliConfig
 	flag.StringVar(&cfg.model, "model", "unsloth/Qwen3.6-35B-A3B-GGUF:Q4_K_M", "model to use in the harness (downloaded if not cached); every cached model is made available")
-	flag.StringVar(&cfg.host, "host", "127.0.0.1", "llama-server host")
+	flag.StringVar(&cfg.host, "host", defaultHost, "llama-server host (with -sandbox and the default, it listens on 0.0.0.0 so containers can reach it)")
 	flag.IntVar(&cfg.port, "port", 8080, "llama-server port")
 	flag.StringVar(&cfg.harness, "harness", "opencode", "coding agent harness to run (available: opencode)")
-	// TODO: to keep in mind, but I'd like to have a --sandbox flag for the harness to run on a container
-	// mounts home cwd with container
+	flag.BoolVar(&cfg.sandbox, "sandbox", false, "run the harness in a Docker container that mounts the current directory")
+	flag.StringVar(&cfg.image, "image", "", "sandbox container image (default "+harness.DefaultSandboxImage+"); requires -sandbox")
+	flag.BoolVar(&cfg.build, "build", false, "build the sandbox image from the embedded Dockerfile instead of pulling it; requires -sandbox")
 	flag.Parse()
-	return cfg
+	return cfg, cfg.validate()
 }
 
 func main() {
@@ -47,18 +71,33 @@ func main() {
 }
 
 func run() error {
-	cfg := parseFlags()
+	cfg, err := parseFlags()
+	if err != nil {
+		return err
+	}
 
-	h, err := harness.New(cfg.harness)
+	h, err := harness.New(cfg.harness, harness.Options{Sandbox: cfg.sandbox, Image: cfg.image, Build: cfg.build})
 	if err != nil {
 		return err
 	}
 	if err := h.Available(); err != nil {
 		return err
 	}
+	// Before starting any server, so a failed image pull/build leaves nothing
+	// running.
+	if p, ok := h.(harness.Preparer); ok {
+		if err := p.Prepare(); err != nil {
+			return err
+		}
+	}
 
-	opts := llamaserver.Options{Host: cfg.host, Port: cfg.port}
-	baseURL := opts.BaseURL()
+	// The URL oc itself uses (health checks, model discovery) stays on -host;
+	// only the address the server listens on widens for a sandbox.
+	baseURL := llamaserver.Options{Host: cfg.host, Port: cfg.port}.BaseURL()
+	opts := llamaserver.Options{Host: cfg.bindHost(), Port: cfg.port}
+	if cfg.bindHost() != cfg.host {
+		fmt.Fprintf(os.Stderr, "oc: sandbox mode: llama-server will listen on %s:%d, reachable from your network; pass -host to restrict it\n", cfg.bindHost(), cfg.port)
+	}
 
 	// Register as a user of this port's llama-server for the whole run, so
 	// that if it's shared with another concurrent oc instance, whichever one

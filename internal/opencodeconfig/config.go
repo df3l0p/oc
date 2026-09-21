@@ -3,6 +3,7 @@
 package opencodeconfig
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -49,33 +50,12 @@ func Merge(path, providerKey string, provider Provider) error {
 		if !os.IsNotExist(err) {
 			return fmt.Errorf("reading %s: %w", path, err)
 		}
-		raw = []byte("{}")
+		raw = nil
 	}
-
-	config := map[string]interface{}{}
-	if stripped := stripJSONComments(raw); len(stripped) > 0 {
-		if err := json.Unmarshal(stripped, &config); err != nil {
-			return fmt.Errorf("parsing %s: %w", path, err)
-		}
-	}
-
-	providers, _ := config["provider"].(map[string]interface{})
-	if providers == nil {
-		providers = map[string]interface{}{}
-	}
-
-	providerBlock, err := toMap(provider)
+	out, err := render(raw, providerKey, provider)
 	if err != nil {
-		return fmt.Errorf("encoding provider block: %w", err)
+		return fmt.Errorf("%s: %w", path, err)
 	}
-	providers[providerKey] = providerBlock
-	config["provider"] = providers
-
-	out, err := json.MarshalIndent(config, "", "  ")
-	if err != nil {
-		return fmt.Errorf("encoding %s: %w", path, err)
-	}
-	out = append(out, '\n')
 
 	tmp, err := os.CreateTemp(dir, ".oc-config-*.tmp")
 	if err != nil {
@@ -98,6 +78,49 @@ func Merge(path, providerKey string, provider Provider) error {
 		return fmt.Errorf("replacing %s: %w", path, err)
 	}
 	return nil
+}
+
+// Render returns the config at path (a missing file counts as "{}") with
+// provider[providerKey] set to the given block, as JSON, without writing
+// anything. It's Merge's read-and-modify half, for callers that want a
+// modified copy of the config rather than to change the original.
+func Render(path, providerKey string, provider Provider) ([]byte, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("reading %s: %w", path, err)
+	}
+	out, err := render(raw, providerKey, provider)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	return out, nil
+}
+
+func render(raw []byte, providerKey string, provider Provider) ([]byte, error) {
+	config := map[string]interface{}{}
+	if stripped := stripJSONComments(raw); len(bytes.TrimSpace(stripped)) > 0 {
+		if err := json.Unmarshal(stripped, &config); err != nil {
+			return nil, fmt.Errorf("parsing: %w", err)
+		}
+	}
+
+	providers, _ := config["provider"].(map[string]interface{})
+	if providers == nil {
+		providers = map[string]interface{}{}
+	}
+
+	providerBlock, err := toMap(provider)
+	if err != nil {
+		return nil, fmt.Errorf("encoding provider block: %w", err)
+	}
+	providers[providerKey] = providerBlock
+	config["provider"] = providers
+
+	out, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("encoding: %w", err)
+	}
+	return append(out, '\n'), nil
 }
 
 func toMap(provider Provider) (map[string]interface{}, error) {

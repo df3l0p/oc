@@ -54,6 +54,9 @@ This starts (or reuses) a llama-server serving the default model, merges a
 | `-host`     | `127.0.0.1`                                       | llama-server host                                |
 | `-port`     | `8080`                                            | llama-server port                                |
 | `-harness`  | `opencode`                                        | Coding agent to run                              |
+| `-sandbox`  | off                                               | Run the agent in a Docker container (see below)  |
+| `-image`    | `ghcr.io/df3l0p/oc-sandbox:latest`                | Sandbox image (requires `-sandbox`)              |
+| `-build`    | off                                               | Build the sandbox image from the embedded Dockerfile instead of pulling (requires `-sandbox`) |
 
 Each harness owns its own config path internally (opencode's is its default
 global config, `~/.config/opencode/opencode.jsonc`) — there's no flag for it.
@@ -75,6 +78,30 @@ different `-model`. A server started some other way with a fixed model
 (`-hf`/`-m`) only serves that model; `oc -model <other>` against it fails
 with an error rather than silently using the wrong model — stop it or use
 `-port`.
+
+### Sandbox mode
+
+`oc -sandbox` runs the agent inside a Docker container instead of on the
+host. The llama-server still runs on the host; the container reaches it at
+`host.docker.internal`, the current directory is bind-mounted at
+`/workspace`, and the container runs as your uid/gid so files it writes keep
+your ownership. Only `docker` is needed on the host (not opencode).
+
+- **Config:** `oc` generates a private copy of your opencode config with the
+  `llama-cpp` provider's `baseURL` rewritten for the container and mounts it
+  read-only. Your real config is not modified.
+- **Image:** the default image is pulled if it isn't local; if the pull fails
+  the embedded `Dockerfile` (`internal/harness/Dockerfile`) is built
+  instead. With a custom `-image`, a failed pull is an error; add `-build`
+  to build it locally. `-build` always builds.
+- **Parallel sessions:** each session gets a uniquely named container, and
+  any number can share one host llama-server (same lifecycle rules as above).
+- **Network exposure:** so containers can reach it on Linux, `oc` starts
+  llama-server on `0.0.0.0` in sandbox mode (and prints a warning) unless you
+  pass `-host`. It is then reachable from your network. A server that was
+  already running bound to `127.0.0.1` is reused as-is, and works from
+  containers on Docker Desktop but generally not on Linux.
+- Session data inside the container is discarded on exit (`--rm`).
 
 ## Notes
 
