@@ -8,9 +8,11 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/df3l0p/oc/images"
 	"github.com/df3l0p/oc/internal/harness"
 	"github.com/df3l0p/oc/internal/llamaserver"
 )
@@ -57,8 +59,8 @@ func parseFlags() (cliConfig, error) {
 	flag.IntVar(&cfg.port, "port", 8080, "llama-server port")
 	flag.StringVar(&cfg.harness, "harness", "opencode", "coding agent harness to run (available: opencode)")
 	flag.BoolVar(&cfg.sandbox, "sandbox", false, "run the harness in a Docker container that mounts the current directory")
-	flag.StringVar(&cfg.image, "image", "", "sandbox container image (default "+harness.DefaultSandboxImage+"); requires -sandbox")
-	flag.BoolVar(&cfg.build, "build", false, "rebuild the sandbox image from the embedded Dockerfile even if it exists (it is built when missing, never pulled); requires -sandbox")
+	flag.StringVar(&cfg.image, "image", "", "bundled sandbox image to use (default "+images.Default+"; available: "+strings.Join(images.Names(), ", ")+"); requires -sandbox")
+	flag.BoolVar(&cfg.build, "build", false, "rebuild the sandbox image from scratch, without docker's layer cache, even if it exists (it is built when missing, never pulled); requires -sandbox")
 	flag.Parse()
 	return cfg, cfg.validate()
 }

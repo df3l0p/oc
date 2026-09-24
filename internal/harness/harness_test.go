@@ -1,6 +1,10 @@
 package harness
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/df3l0p/oc/images"
+)
 
 func TestNewReturnsRegisteredHarness(t *testing.T) {
 	h, err := New("opencode", Options{})
@@ -21,8 +25,8 @@ func TestNewSandboxReturnsSandboxHarness(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected a *Sandbox harness, got %T", h)
 	}
-	if s.image != DefaultSandboxImage {
-		t.Errorf("image = %q, want default %q", s.image, DefaultSandboxImage)
+	if s.name != images.Default {
+		t.Errorf("image name = %q, want default %q", s.name, images.Default)
 	}
 }
 

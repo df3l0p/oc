@@ -55,8 +55,8 @@ This starts (or reuses) a llama-server serving the default model, merges a
 | `-port`     | `8080`                                            | llama-server port                                |
 | `-harness`  | `opencode`                                        | Coding agent to run                              |
 | `-sandbox`  | off                                               | Run the agent in a Docker container (see below)  |
-| `-image`    | `oc-sandbox:latest`                               | Local sandbox image name; built if missing, never pulled (requires `-sandbox`) |
-| `-build`    | off                                               | Rebuild the sandbox image from the embedded Dockerfile even if it exists (requires `-sandbox`) |
+| `-image`    | `default`                                         | Bundled sandbox image to use (see below; requires `-sandbox`) |
+| `-build`    | off                                               | Rebuild the sandbox image even if it exists (requires `-sandbox`) |
 
 Each harness owns its own config path internally (opencode's is its default
 global config, `~/.config/opencode/opencode.jsonc`) — there's no flag for it.
@@ -90,13 +90,29 @@ your ownership. Only `docker` is needed on the host (not opencode).
 - **Config:** `oc` generates a private copy of your opencode config with the
   `llama-cpp` provider's `baseURL` rewritten for the container and mounts it
   read-only. Your real config is not modified.
-- **Image:** `oc` never pulls the sandbox image from a registry. If the
-  image (default `oc-sandbox:latest`) isn't present locally, it is built
-  from the embedded `Dockerfile` (`internal/harness/Dockerfile`), and a
-  build failure is an error. `-build` forces a rebuild. Note the build
-  itself still fetches the `node:22-slim` base image, apt packages and the
-  `opencode-ai` npm package; to control that, review or pin them in the
-  Dockerfile, or pre-build your own image and pass `-image`.
+- **Images:** `-image <name>` selects one of the images bundled in
+  [`images/`](images), each a `<name>.Dockerfile`. The default, `default`,
+  has opencode, git, `jq`, `ripgrep` and `curl`. Every image is a layer on an
+  internal `base` image (opencode, git, the non-root user) that isn't
+  selectable itself.
+  `oc` never pulls a sandbox image from a registry: a missing image is built
+  from its Dockerfile (a build failure is an error). `-build` rebuilds the
+  images from scratch, ignoring docker's layer cache, so it also picks up new
+  apt package versions and a newer `opencode-ai`; without it, an existing image
+  is reused indefinitely.
+  Images are tagged `oc-sandbox-<name>:<hash>` from the Dockerfile's contents
+  (and that of the base), so a changed Dockerfile builds a new image and an
+  unchanged one is reused. Note the build itself still fetches the
+  `node:22-slim` base image, apt packages and the `opencode-ai` npm package; to
+  control that, review or pin them in the Dockerfiles. Old tags are not
+  removed automatically; list them with `docker images 'oc-sandbox-*'` and
+  delete the ones you no longer need with `docker rmi`.
+  - **Adding an image:** add `images/<name>.Dockerfile` as a layer on the
+    base: declare `ARG OC_BASE`, make the final stage `FROM ${OC_BASE}` (oc
+    passes the built base image as that build arg), and end with `USER oc`,
+    after a `USER root` for installs. A test checks every bundled Dockerfile
+    against this. Dockerfiles are built without a build context, so they can't
+    `COPY` local files.
 - **Parallel sessions:** each session gets a uniquely named container, and
   any number can share one host llama-server (same lifecycle rules as above).
 - **Network exposure:** so containers can reach it on Linux, `oc` starts
