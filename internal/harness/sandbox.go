@@ -55,6 +55,22 @@ type Sandbox struct {
 // hostOS is runtime.GOOS, replaceable in tests.
 var hostOS = runtime.GOOS
 
+// isLocalIP reports whether ip is assigned to one of this machine's
+// interfaces, i.e. whether a server here can listen on it. Replaceable in
+// tests.
+var isLocalIP = func(ip net.IP) bool {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return false
+	}
+	for _, a := range addrs {
+		if n, ok := a.(*net.IPNet); ok && n.IP.Equal(ip) {
+			return true
+		}
+	}
+	return false
+}
+
 func newSandbox(opts Options, hostConfig string) *Sandbox {
 	name := opts.Image
 	if name == "" {
@@ -91,6 +107,12 @@ func (s *Sandbox) BindHost() (string, error) {
 	}
 	for _, field := range strings.Fields(string(out)) {
 		if ip := net.ParseIP(field); ip != nil && ip.To4() != nil {
+			// With rootless Docker or a remote daemon the bridge lives in
+			// another network namespace, so its gateway isn't an address
+			// llama-server could bind here.
+			if !isLocalIP(ip) {
+				return "", fmt.Errorf("docker's bridge gateway %s isn't an address of this machine (rootless or remote docker?); pass -host to choose the listen address yourself", field)
+			}
 			s.hostIP = field
 			return field, nil
 		}

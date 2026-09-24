@@ -26,6 +26,7 @@ const providerKey = "llama-cpp"
 type cliConfig struct {
 	model   string
 	host    string
+	hostSet bool // -host was passed explicitly, even if equal to the default
 	port    int
 	harness string
 	sandbox bool
@@ -44,12 +45,12 @@ func (c cliConfig) validate() error {
 }
 
 // listenHost is the address llama-server listens on, and that oc itself uses
-// to reach it. An explicit -host is used as is (with a warning if it's a
-// wildcard). With the default host, a harness that runs the agent in a
+// to reach it. An explicit -host (hostSet, or any non-default value) is used as
+// is, with a warning if it's a wildcard. Without one, a harness that runs the agent in a
 // container picks the narrowest address the container can reach, which on a
 // native Linux engine isn't the host's loopback.
-func listenHost(h harness.Harness, host string) (string, error) {
-	if host != defaultHost {
+func listenHost(h harness.Harness, host string, hostSet bool) (string, error) {
+	if hostSet || host != defaultHost {
 		if ip := net.ParseIP(host); ip != nil && ip.IsUnspecified() {
 			fmt.Fprintf(os.Stderr, "oc: warning: -host %s makes llama-server reachable from your whole network\n", host)
 		}
@@ -71,6 +72,11 @@ func parseFlags() (cliConfig, error) {
 	flag.StringVar(&cfg.image, "image", "", "bundled sandbox image to use (default "+images.Default+"; available: "+strings.Join(images.Names(), ", ")+"); requires -sandbox")
 	flag.BoolVar(&cfg.build, "build", false, "rebuild the sandbox image from scratch, without docker's layer cache, even if it exists (it is built when missing, never pulled); requires -sandbox")
 	flag.Parse()
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "host" {
+			cfg.hostSet = true
+		}
+	})
 	return cfg, cfg.validate()
 }
 
@@ -104,7 +110,7 @@ func run() error {
 
 	// oc talks to the server on the address it listens on: a server bound to a
 	// specific interface doesn't answer on the loopback.
-	host, err := listenHost(h, cfg.host)
+	host, err := listenHost(h, cfg.host, cfg.hostSet)
 	if err != nil {
 		return err
 	}

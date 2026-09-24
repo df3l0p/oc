@@ -3,6 +3,7 @@ package harness
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"sort"
@@ -172,6 +173,7 @@ func TestSandboxBindHost(t *testing.T) {
 		wantHostIP  string
 		wantErr     string
 		wantNoCalls bool
+		notLocal    bool // the gateway isn't an address of this machine
 	}{
 		{
 			name: "macOS never asks docker and uses the loopback", os: "darwin",
@@ -193,6 +195,12 @@ func TestSandboxBindHost(t *testing.T) {
 			want:   "10.200.0.1", wantHostIP: "10.200.0.1",
 		},
 		{
+			name: "a gateway that isn't a local address is an error", os: "linux",
+			stdout:   map[string]string{infoPrefix: "Ubuntu 24.04", bridgePrefix: "172.17.0.1 "},
+			notLocal: true,
+			wantErr:  "-host", wantHostIP: "host-gateway",
+		},
+		{
 			name: "no usable gateway is an error, never a wildcard", os: "linux",
 			stdout:  map[string]string{infoPrefix: "Ubuntu 24.04", bridgePrefix: " "},
 			wantErr: "-host", wantHostIP: "host-gateway",
@@ -211,9 +219,10 @@ func TestSandboxBindHost(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			old := hostOS
+			oldOS, oldLocal := hostOS, isLocalIP
 			hostOS = tt.os
-			t.Cleanup(func() { hostOS = old })
+			isLocalIP = func(net.IP) bool { return !tt.notLocal }
+			t.Cleanup(func() { hostOS, isLocalIP = oldOS, oldLocal })
 			logPath := fakeDockerOutput(t, tt.exit, tt.stdout)
 			s := newSandbox(Options{Sandbox: true}, "")
 
