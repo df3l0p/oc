@@ -98,7 +98,9 @@ func (s *Sandbox) Prepare() error {
 }
 
 // ensure builds tag from dockerfile unless it exists locally (or -build was
-// given). A non-empty baseTag is passed as the OC_BASE build arg.
+// given). A non-empty baseTag is passed as the OC_BASE build arg. -build also
+// skips docker's layer cache: the Dockerfiles' apt and npm steps are unpinned,
+// so cached layers would keep serving old packages and an old opencode.
 func (s *Sandbox) ensure(tag string, dockerfile []byte, baseTag string) error {
 	if !s.build && exec.Command("docker", "image", "inspect", tag).Run() == nil {
 		return nil
@@ -107,6 +109,9 @@ func (s *Sandbox) ensure(tag string, dockerfile []byte, baseTag string) error {
 	args := []string{"build", "-t", tag, "-"}
 	if baseTag != "" {
 		args = layerBuildArgs(tag, baseTag)
+	}
+	if s.build {
+		args = append([]string{"build", "--no-cache"}, args[1:]...)
 	}
 	// A Dockerfile on stdin means no build context, which is all it needs.
 	cmd := exec.Command("docker", args...)
@@ -164,6 +169,9 @@ func (s *Sandbox) Run(dir, providerKey, modelID string) error {
 		return fmt.Errorf("sandbox: Configure must be called before Run")
 	}
 	defer os.Remove(s.generated)
+	if s.image == "" {
+		return fmt.Errorf("sandbox: Prepare must be called before Run")
+	}
 
 	// Unique per invocation so parallel sessions never collide, whatever port
 	// they share.

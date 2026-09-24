@@ -149,6 +149,7 @@ func TestSandboxRunUsesUniqueContainerNames(t *testing.T) {
 		if err := s.Configure("llama-cpp", "http://127.0.0.1:8080", []string{"m"}); err != nil {
 			t.Fatal(err)
 		}
+		s.image = "oc-sandbox-default:test" // as set by Prepare
 		if err := s.Run(t.TempDir(), "llama-cpp", "m"); err != nil {
 			t.Fatalf("Run: %v", err)
 		}
@@ -181,6 +182,24 @@ func TestSandboxRunRequiresConfigure(t *testing.T) {
 	s := newSandbox(Options{Sandbox: true}, "")
 	if err := s.Run(t.TempDir(), "p", "m"); err == nil {
 		t.Fatal("expected an error when Configure wasn't called")
+	}
+}
+
+func TestSandboxRunRequiresPrepare(t *testing.T) {
+	logPath := fakeDocker(t, nil)
+	s := newSandbox(Options{Sandbox: true}, filepath.Join(t.TempDir(), "absent.jsonc"))
+	if err := s.Configure("llama-cpp", "http://127.0.0.1:8080", []string{"m"}); err != nil {
+		t.Fatal(err)
+	}
+	err := s.Run(t.TempDir(), "llama-cpp", "m")
+	if err == nil || !strings.Contains(err.Error(), "Prepare") {
+		t.Fatalf("Run error = %v, want one saying Prepare must be called", err)
+	}
+	if got := calls(t, logPath); len(got) != 0 {
+		t.Errorf("docker must not be invoked without an image, got %q", got)
+	}
+	if _, err := os.Stat(s.generated); !os.IsNotExist(err) {
+		t.Errorf("generated config must still be removed on this error path, stat err = %v", err)
 	}
 }
 

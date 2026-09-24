@@ -47,11 +47,11 @@ func TestSandboxPrepare(t *testing.T) {
 			wantImage: "oc-sandbox-default:",
 		},
 		{
-			name: "-build rebuilds base and image without inspecting",
+			name: "-build rebuilds base and image without inspecting or using the layer cache",
 			opts: Options{Sandbox: true, Build: true},
 			wantCalls: []string{
-				"build -t oc-sandbox-base:",
-				"build --build-arg OC_BASE=oc-sandbox-base:",
+				"build --no-cache -t oc-sandbox-base:",
+				"build --no-cache --build-arg OC_BASE=oc-sandbox-base:",
 			},
 			wantImage: "oc-sandbox-default:",
 		},

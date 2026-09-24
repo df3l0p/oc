@@ -96,12 +96,17 @@ your ownership. Only `docker` is needed on the host (not opencode).
   internal `base` image (opencode, git, the non-root user) that isn't
   selectable itself.
   `oc` never pulls a sandbox image from a registry: a missing image is built
-  from its Dockerfile (a build failure is an error), and `-build` rebuilds it.
+  from its Dockerfile (a build failure is an error). `-build` rebuilds the
+  images from scratch, ignoring docker's layer cache, so it also picks up new
+  apt package versions and a newer `opencode-ai`; without it, an existing image
+  is reused indefinitely.
   Images are tagged `oc-sandbox-<name>:<hash>` from the Dockerfile's contents
   (and that of the base), so a changed Dockerfile builds a new image and an
   unchanged one is reused. Note the build itself still fetches the
   `node:22-slim` base image, apt packages and the `opencode-ai` npm package; to
-  control that, review or pin them in the Dockerfiles.
+  control that, review or pin them in the Dockerfiles. Old tags are not
+  removed automatically; list them with `docker images 'oc-sandbox-*'` and
+  delete the ones you no longer need with `docker rmi`.
   - **Adding an image:** add `images/<name>.Dockerfile` as a layer on the
     base: declare `ARG OC_BASE`, make the final stage `FROM ${OC_BASE}` (oc
     passes the built base image as that build arg), and end with `USER oc`,

@@ -2,9 +2,29 @@ package images
 
 import (
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 )
+
+// validName is what an image name may look like: it becomes part of the Docker
+// repository name oc-sandbox-<name>, which must be lowercase alphanumerics with
+// single separators, or `docker build` fails with an unhelpful tag error.
+var validName = regexp.MustCompile(`^[a-z0-9]+([._-][a-z0-9]+)*$`)
+
+func TestImageNamesAreValidDockerRepositoryNames(t *testing.T) {
+	for _, name := range append([]string{Base}, Names()...) {
+		if !validName.MatchString(name) {
+			t.Errorf("image name %q must match %s (it becomes oc-sandbox-%s)", name, validName, name)
+		}
+	}
+	// Guard the guard: names it must reject.
+	for _, bad := range []string{"RE", "my image", "-x", "x-", "a--b", ""} {
+		if validName.MatchString(bad) {
+			t.Errorf("validName accepts %q", bad)
+		}
+	}
+}
 
 type instruction struct {
 	name string // upper-cased
