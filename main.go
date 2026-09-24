@@ -5,6 +5,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -25,6 +26,7 @@ const providerKey = "llama-cpp"
 type cliConfig struct {
 	model   string
 	host    string
+	hostSet bool // -host was passed explicitly, even if equal to the default
 	port    int
 	harness string
 	sandbox bool
@@ -42,26 +44,39 @@ func (c cliConfig) validate() error {
 	return nil
 }
 
-// bindHost is the address llama-server listens on. A container can't reach a
-// server bound to the host's loopback (on Linux; Docker Desktop proxies it),
-// so sandbox mode listens on all interfaces unless -host was set explicitly.
-func (c cliConfig) bindHost() string {
-	if c.sandbox && c.host == defaultHost {
-		return "0.0.0.0"
+// listenHost is the address llama-server listens on, and that oc itself uses
+// to reach it. An explicit -host (hostSet, or any non-default value) is used as
+// is, with a warning if it's a wildcard. Without one, a harness that runs the agent in a
+// container picks the narrowest address the container can reach, which on a
+// native Linux engine isn't the host's loopback.
+func listenHost(h harness.Harness, host string, hostSet bool) (string, error) {
+	if hostSet || host != defaultHost {
+		if ip := net.ParseIP(host); ip != nil && ip.IsUnspecified() {
+			fmt.Fprintf(os.Stderr, "oc: warning: -host %s makes llama-server reachable from your whole network\n", host)
+		}
+		return host, nil
 	}
-	return c.host
+	if b, ok := h.(harness.BindHoster); ok {
+		return b.BindHost()
+	}
+	return host, nil
 }
 
 func parseFlags() (cliConfig, error) {
 	var cfg cliConfig
 	flag.StringVar(&cfg.model, "model", "unsloth/Qwen3.6-35B-A3B-GGUF:Q4_K_M", "model to use in the harness (downloaded if not cached); every cached model is made available")
-	flag.StringVar(&cfg.host, "host", defaultHost, "llama-server host (with -sandbox and the default, it listens on 0.0.0.0 so containers can reach it)")
+	flag.StringVar(&cfg.host, "host", defaultHost, "llama-server host (with -sandbox and the default, the narrowest address containers can reach: the loopback on Docker Desktop, the docker bridge gateway on Linux)")
 	flag.IntVar(&cfg.port, "port", 8080, "llama-server port")
 	flag.StringVar(&cfg.harness, "harness", "opencode", "coding agent harness to run (available: opencode)")
 	flag.BoolVar(&cfg.sandbox, "sandbox", false, "run the harness in a Docker container that mounts the current directory")
 	flag.StringVar(&cfg.image, "image", "", "bundled sandbox image to use (default "+images.Default+"; available: "+strings.Join(images.Names(), ", ")+"); requires -sandbox")
 	flag.BoolVar(&cfg.build, "build", false, "rebuild the sandbox image from scratch, without docker's layer cache, even if it exists (it is built when missing, never pulled); requires -sandbox")
 	flag.Parse()
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "host" {
+			cfg.hostSet = true
+		}
+	})
 	return cfg, cfg.validate()
 }
 
@@ -93,12 +108,21 @@ func run() error {
 		}
 	}
 
-	// The URL oc itself uses (health checks, model discovery) stays on -host;
-	// only the address the server listens on widens for a sandbox.
-	baseURL := llamaserver.Options{Host: cfg.host, Port: cfg.port}.BaseURL()
-	opts := llamaserver.Options{Host: cfg.bindHost(), Port: cfg.port}
-	if cfg.bindHost() != cfg.host {
-		fmt.Fprintf(os.Stderr, "oc: sandbox mode: llama-server will listen on %s:%d, reachable from your network; pass -host to restrict it\n", cfg.bindHost(), cfg.port)
+	// oc talks to the server on the address it listens on: a server bound to a
+	// specific interface doesn't answer on the loopback.
+	host, err := listenHost(h, cfg.host, cfg.hostSet)
+	if err != nil {
+		return err
+	}
+	opts := llamaserver.Options{Host: host, Port: cfg.port}
+	baseURL := opts.BaseURL()
+	if host != cfg.host {
+		// A server already on the loopback would be reused by the host but
+		// isn't reachable from the container, and starting another on the same
+		// port would fail confusingly.
+		if loopback := (llamaserver.Options{Host: cfg.host, Port: cfg.port}).BaseURL(); !llamaserver.IsHealthy(baseURL) && llamaserver.IsHealthy(loopback) {
+			return fmt.Errorf("a llama-server at %s isn't reachable from the sandbox (it needs to listen on %s); stop it or use -port", loopback, host)
+		}
 	}
 
 	// Register as a user of this port's llama-server for the whole run, so

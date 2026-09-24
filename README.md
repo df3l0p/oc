@@ -51,7 +51,7 @@ This starts (or reuses) a llama-server serving the default model, merges a
 | Flag        | Default                                          | Description                                     |
 |-------------|---------------------------------------------------|--------------------------------------------------|
 | `-model`    | `unsloth/Qwen3.6-35B-A3B-GGUF:Q4_K_M`             | Model to select in the agent (quant optional; downloaded if not cached) |
-| `-host`     | `127.0.0.1`                                       | llama-server host                                |
+| `-host`     | `127.0.0.1`                                       | llama-server host (with `-sandbox`, the narrowest address containers can reach; see below) |
 | `-port`     | `8080`                                            | llama-server port                                |
 | `-harness`  | `opencode`                                        | Coding agent to run                              |
 | `-sandbox`  | off                                               | Run the agent in a Docker container (see below)  |
@@ -115,11 +115,22 @@ your ownership. Only `docker` is needed on the host (not opencode).
     `COPY` local files.
 - **Parallel sessions:** each session gets a uniquely named container, and
   any number can share one host llama-server (same lifecycle rules as above).
-- **Network exposure:** so containers can reach it on Linux, `oc` starts
-  llama-server on `0.0.0.0` in sandbox mode (and prints a warning) unless you
-  pass `-host`. It is then reachable from your network. A server that was
-  already running bound to `127.0.0.1` is reused as-is, and works from
-  containers on Docker Desktop but generally not on Linux.
+- **Network exposure:** `oc` never listens on all interfaces by default. With
+  the default `-host`, llama-server listens on `127.0.0.1` on macOS and Docker
+  Desktop (which forward `host.docker.internal` to the host's loopback), and on
+  the default Docker bridge's gateway IP (usually `172.17.0.1`) with a native
+  Linux engine. That address isn't reachable from your network, and the
+  container is pointed at the same IP. An explicit `-host` is used as is (a
+  wildcard like `0.0.0.0` prints a warning).
+  - On Linux, an already-running server bound to `127.0.0.1` isn't reachable
+    from the container, so `oc` stops with an error instead of reusing it.
+  - Remaining exposure: the container can reach every host port that is
+    listening on the address above (on macOS and Docker Desktop that means
+    anything on your localhost), not only llama-server's. On Linux, other
+    containers on the default bridge can also reach llama-server, and a host
+    firewall (e.g. `ufw`) may need to allow traffic from the bridge to the
+    host. Routing all sandbox traffic through a proxy container, which would
+    close this, is tracked in [#6](https://github.com/df3l0p/oc/issues/6).
 - Session data inside the container is discarded on exit (`--rm`).
 
 ## Notes

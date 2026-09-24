@@ -3,6 +3,7 @@ package harness
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"sort"
@@ -16,17 +17,34 @@ import (
 // status it should return, the longest matching prefix winning; anything not
 // listed exits 0.
 func fakeDocker(t *testing.T, exitFor map[string]int) (logPath string) {
+	return fakeDockerOutput(t, exitFor, nil)
+}
+
+// fakeDockerOutput is fakeDocker where a call matching a prefix in stdoutFor
+// also prints the mapped text to stdout.
+func fakeDockerOutput(t *testing.T, exitFor map[string]int, stdoutFor map[string]string) (logPath string) {
 	t.Helper()
 	dir := t.TempDir()
 	logPath = filepath.Join(dir, "calls.log")
-	prefixes := make([]string, 0, len(exitFor))
+	seen := map[string]bool{}
+	var prefixes []string
 	for prefix := range exitFor {
+		seen[prefix] = true
 		prefixes = append(prefixes, prefix)
+	}
+	for prefix := range stdoutFor {
+		if !seen[prefix] {
+			prefixes = append(prefixes, prefix)
+		}
 	}
 	sort.Slice(prefixes, func(i, j int) bool { return len(prefixes[i]) > len(prefixes[j]) })
 	var cases strings.Builder
 	for _, prefix := range prefixes {
-		fmt.Fprintf(&cases, "  \"%s\"*) exit %d ;;\n", prefix, exitFor[prefix])
+		out := ""
+		if text, ok := stdoutFor[prefix]; ok {
+			out = fmt.Sprintf("printf '%%s' '%s'; ", text)
+		}
+		fmt.Fprintf(&cases, "  \"%s\"*) %sexit %d ;;\n", prefix, out, exitFor[prefix])
 	}
 	script := fmt.Sprintf("#!/bin/sh\necho \"$*\" >> %q\ncase \"$*\" in\n%s  *) exit 0 ;;\nesac\n", logPath, cases.String())
 	if err := os.WriteFile(filepath.Join(dir, "docker"), []byte(script), 0o755); err != nil {
@@ -138,6 +156,108 @@ func TestSandboxRunArgs(t *testing.T) {
 	}
 	if got := strings.Join(s.runArgs("n", "/d", "p", "m", true), " "); !strings.Contains(got, " -it ") {
 		t.Errorf("expected -it with a TTY: %s", got)
+	}
+}
+
+func TestSandboxBindHost(t *testing.T) {
+	const (
+		infoPrefix   = "info --format"
+		bridgePrefix = "network inspect bridge"
+	)
+	tests := []struct {
+		name        string
+		os          string
+		exit        map[string]int
+		stdout      map[string]string
+		want        string
+		wantHostIP  string
+		wantErr     string
+		wantNoCalls bool
+		notLocal    bool // the gateway isn't an address of this machine
+	}{
+		{
+			name: "macOS never asks docker and uses the loopback", os: "darwin",
+			want: "127.0.0.1", wantHostIP: "host-gateway", wantNoCalls: true,
+		},
+		{
+			name: "Docker Desktop on Linux uses the loopback", os: "linux",
+			stdout: map[string]string{infoPrefix: "Docker Desktop"},
+			want:   "127.0.0.1", wantHostIP: "host-gateway",
+		},
+		{
+			name: "native Linux engine uses the bridge gateway", os: "linux",
+			stdout: map[string]string{infoPrefix: "Ubuntu 24.04", bridgePrefix: "172.17.0.1 "},
+			want:   "172.17.0.1", wantHostIP: "172.17.0.1",
+		},
+		{
+			name: "IPv6 gateways are skipped", os: "linux",
+			stdout: map[string]string{infoPrefix: "Ubuntu 24.04", bridgePrefix: "fd00::1 10.200.0.1 "},
+			want:   "10.200.0.1", wantHostIP: "10.200.0.1",
+		},
+		{
+			name: "a gateway that isn't a local address is an error", os: "linux",
+			stdout:   map[string]string{infoPrefix: "Ubuntu 24.04", bridgePrefix: "172.17.0.1 "},
+			notLocal: true,
+			wantErr:  "-host", wantHostIP: "host-gateway",
+		},
+		{
+			name: "no usable gateway is an error, never a wildcard", os: "linux",
+			stdout:  map[string]string{infoPrefix: "Ubuntu 24.04", bridgePrefix: " "},
+			wantErr: "-host", wantHostIP: "host-gateway",
+		},
+		{
+			name: "bridge lookup failure is an error", os: "linux",
+			exit:    map[string]int{bridgePrefix: 1},
+			stdout:  map[string]string{infoPrefix: "Ubuntu 24.04"},
+			wantErr: "-host", wantHostIP: "host-gateway",
+		},
+		{
+			name: "docker info failure is an error", os: "linux",
+			exit:    map[string]int{infoPrefix: 1},
+			wantErr: "docker info", wantHostIP: "host-gateway",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			oldOS, oldLocal := hostOS, isLocalIP
+			hostOS = tt.os
+			isLocalIP = func(net.IP) bool { return !tt.notLocal }
+			t.Cleanup(func() { hostOS, isLocalIP = oldOS, oldLocal })
+			logPath := fakeDockerOutput(t, tt.exit, tt.stdout)
+			s := newSandbox(Options{Sandbox: true}, "")
+
+			got, err := s.BindHost()
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("BindHost error = %v, want one containing %q", err, tt.wantErr)
+				}
+			} else if err != nil {
+				t.Fatalf("BindHost: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("BindHost = %q, want %q", got, tt.want)
+			}
+			if got == "0.0.0.0" {
+				t.Error("BindHost must never return a wildcard")
+			}
+			if s.hostIP != tt.wantHostIP {
+				t.Errorf("hostIP = %q, want %q", s.hostIP, tt.wantHostIP)
+			}
+			if tt.wantNoCalls && len(calls(t, logPath)) != 0 {
+				t.Errorf("docker must not be invoked, got %q", calls(t, logPath))
+			}
+		})
+	}
+}
+
+func TestSandboxRunArgsPointsContainerAtTheBoundGateway(t *testing.T) {
+	s := newSandbox(Options{Sandbox: true}, "")
+	s.image = "img"
+	s.generated = "/tmp/gen.jsonc"
+	s.hostIP = "172.17.0.1"
+	got := strings.Join(s.runArgs("n", "/d", "p", "m", false), " ")
+	if !strings.Contains(got, "--add-host host.docker.internal:172.17.0.1") {
+		t.Errorf("args missing the gateway --add-host:\n%s", got)
 	}
 }
 
