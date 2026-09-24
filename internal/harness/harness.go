@@ -36,10 +36,12 @@ type Preparer interface {
 type Options struct {
 	// Sandbox runs the agent in a Docker container instead of on the host.
 	Sandbox bool
-	// Image is the sandbox container image; empty means DefaultSandboxImage.
+	// Image names the bundled sandbox image (see package images); empty means
+	// images.Default.
 	Image string
-	// Build rebuilds the sandbox image from the embedded Dockerfile even if it
-	// already exists locally. A missing image is always built, never pulled.
+	// Build rebuilds the sandbox image (and the base image it layers on)
+	// even if it already exists locally. A missing image is always built, never
+	// pulled.
 	Build bool
 }
 

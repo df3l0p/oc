@@ -5,23 +5,30 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
 
 // fakeDocker puts a `docker` shell script on PATH that appends each
 // invocation's argv (one line per call) to the returned log file. exitFor maps
-// a docker subcommand (e.g. "build") to the exit status it should return;
-// anything not listed exits 0.
+// an argv prefix (e.g. "build" or "image inspect oc-sandbox-") to the exit
+// status it should return, the longest matching prefix winning; anything not
+// listed exits 0.
 func fakeDocker(t *testing.T, exitFor map[string]int) (logPath string) {
 	t.Helper()
 	dir := t.TempDir()
 	logPath = filepath.Join(dir, "calls.log")
-	var cases strings.Builder
-	for sub, code := range exitFor {
-		fmt.Fprintf(&cases, "  %s) exit %d ;;\n", sub, code)
+	prefixes := make([]string, 0, len(exitFor))
+	for prefix := range exitFor {
+		prefixes = append(prefixes, prefix)
 	}
-	script := fmt.Sprintf("#!/bin/sh\necho \"$*\" >> %q\ncase \"$1\" in\n%s  *) exit 0 ;;\nesac\n", logPath, cases.String())
+	sort.Slice(prefixes, func(i, j int) bool { return len(prefixes[i]) > len(prefixes[j]) })
+	var cases strings.Builder
+	for _, prefix := range prefixes {
+		fmt.Fprintf(&cases, "  \"%s\"*) exit %d ;;\n", prefix, exitFor[prefix])
+	}
+	script := fmt.Sprintf("#!/bin/sh\necho \"$*\" >> %q\ncase \"$*\" in\n%s  *) exit 0 ;;\nesac\n", logPath, cases.String())
 	if err := os.WriteFile(filepath.Join(dir, "docker"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +115,8 @@ func TestSandboxConfigureWithMissingHostConfig(t *testing.T) {
 }
 
 func TestSandboxRunArgs(t *testing.T) {
-	s := newSandbox(Options{Sandbox: true, Image: "my/img:1"}, "")
+	s := newSandbox(Options{Sandbox: true}, "")
+	s.image = "oc-sandbox-default:abc123" // as set by Prepare
 	s.generated = "/tmp/gen.jsonc"
 
 	args := s.runArgs("oc-1-aa", "/work/proj", "llama-cpp", "m1", false)
@@ -119,7 +127,7 @@ func TestSandboxRunArgs(t *testing.T) {
 		"-v /work/proj:/workspace",
 		"-v /tmp/gen.jsonc:/etc/oc/opencode.jsonc:ro",
 		"-e OPENCODE_CONFIG=/etc/oc/opencode.jsonc",
-		"my/img:1 -m llama-cpp/m1 .",
+		"oc-sandbox-default:abc123 -m llama-cpp/m1 .",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("args missing %q:\n%s", want, joined)
@@ -195,75 +203,5 @@ func TestSandboxAvailableReportsUnreachableDaemon(t *testing.T) {
 	s := newSandbox(Options{Sandbox: true}, "")
 	if err := s.Available(); err == nil || !strings.Contains(err.Error(), "daemon") {
 		t.Errorf("expected a daemon error, got %v", err)
-	}
-}
-
-func TestSandboxPrepare(t *testing.T) {
-	tests := []struct {
-		name      string
-		opts      Options
-		exit      map[string]int
-		wantCalls []string // subcommand prefixes, in order
-		wantErr   string
-	}{
-		{
-			name:      "image present locally: nothing to do",
-			opts:      Options{Sandbox: true},
-			wantCalls: []string{"image inspect"},
-		},
-		{
-			name:      "missing: built, never pulled",
-			opts:      Options{Sandbox: true},
-			exit:      map[string]int{"image": 1},
-			wantCalls: []string{"image inspect", "build"},
-		},
-		{
-			name:      "custom image missing: built under that name",
-			opts:      Options{Sandbox: true, Image: "my/img"},
-			exit:      map[string]int{"image": 1},
-			wantCalls: []string{"image inspect", "build -t my/img"},
-		},
-		{
-			name:      "build failure is an error",
-			opts:      Options{Sandbox: true},
-			exit:      map[string]int{"image": 1, "build": 1},
-			wantCalls: []string{"image inspect", "build"},
-			wantErr:   "building",
-		},
-		{
-			name:      "-build rebuilds without inspecting",
-			opts:      Options{Sandbox: true, Build: true},
-			wantCalls: []string{"build"},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			logPath := fakeDocker(t, tt.exit)
-			err := newSandbox(tt.opts, "").Prepare()
-			if tt.wantErr == "" && err != nil {
-				t.Fatalf("Prepare: %v", err)
-			}
-			if tt.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErr)) {
-				t.Fatalf("Prepare error = %v, want it to contain %q", err, tt.wantErr)
-			}
-			got := calls(t, logPath)
-			if len(got) != len(tt.wantCalls) {
-				t.Fatalf("docker calls = %q, want prefixes %q", got, tt.wantCalls)
-			}
-			for i, c := range got {
-				if !strings.HasPrefix(c, tt.wantCalls[i]) {
-					t.Errorf("call %d = %q, want prefix %q", i, c, tt.wantCalls[i])
-				}
-			}
-		})
-	}
-}
-
-func TestEmbeddedDockerfileInstallsOpencodeAsNonRoot(t *testing.T) {
-	d := string(sandboxDockerfile)
-	for _, want := range []string{"npm install -g opencode-ai", "USER oc", "ENTRYPOINT"} {
-		if !strings.Contains(d, want) {
-			t.Errorf("embedded Dockerfile missing %q", want)
-		}
 	}
 }
