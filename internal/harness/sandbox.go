@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 
 	"github.com/df3l0p/oc/images"
@@ -45,14 +46,56 @@ type Sandbox struct {
 	// generated is the temp file written by Configure and mounted into the
 	// container; removed when Run returns.
 	generated string
+	// hostIP is what containerHost resolves to inside the container: the
+	// bridge gateway IP that llama-server listens on (set by BindHost), or
+	// host-gateway when Docker provides the route itself.
+	hostIP string
 }
+
+// hostOS is runtime.GOOS, replaceable in tests.
+var hostOS = runtime.GOOS
 
 func newSandbox(opts Options, hostConfig string) *Sandbox {
 	name := opts.Image
 	if name == "" {
 		name = images.Default
 	}
-	return &Sandbox{name: name, build: opts.Build, hostConfig: hostConfig}
+	return &Sandbox{name: name, build: opts.Build, hostConfig: hostConfig, hostIP: "host-gateway"}
+}
+
+// BindHost returns the address llama-server should listen on so the container
+// can reach it without exposing it to the network.
+//
+// Where Docker runs in a VM (any macOS, Docker Desktop) it forwards
+// host.docker.internal to the host's loopback, so 127.0.0.1 is enough. With a
+// native Linux engine the container's route to the host is the default
+// bridge's gateway IP, so that is the address to listen on: it isn't reachable
+// from outside the machine. The container is then pointed at that same IP, so
+// the two can't disagree.
+func (s *Sandbox) BindHost() (string, error) {
+	if hostOS == "darwin" {
+		return "127.0.0.1", nil
+	}
+	out, err := exec.Command("docker", "info", "--format", "{{.OperatingSystem}}").Output()
+	if err != nil {
+		return "", fmt.Errorf("querying docker info: %w", err)
+	}
+	if strings.Contains(string(out), "Docker Desktop") {
+		return "127.0.0.1", nil
+	}
+
+	out, err = exec.Command("docker", "network", "inspect", "bridge",
+		"--format", "{{range .IPAM.Config}}{{.Gateway}} {{end}}").Output()
+	if err != nil {
+		return "", fmt.Errorf("querying docker's bridge network: %w (pass -host to choose the listen address yourself)", err)
+	}
+	for _, field := range strings.Fields(string(out)) {
+		if ip := net.ParseIP(field); ip != nil && ip.To4() != nil {
+			s.hostIP = field
+			return field, nil
+		}
+	}
+	return "", fmt.Errorf("couldn't determine docker's bridge gateway IP (pass -host to choose the listen address yourself)")
 }
 
 func (s *Sandbox) Available() error {
@@ -203,7 +246,7 @@ func (s *Sandbox) runArgs(name, dir, providerKey, modelID string, tty bool) []st
 		// docker fetch one from a registry behind our back.
 		"run", "--rm", "--pull=never", flags,
 		"--name", name,
-		"--add-host", containerHost + ":host-gateway",
+		"--add-host", containerHost + ":" + s.hostIP,
 		"--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
 		"-e", "HOME=" + containerHome,
 		"-e", "OPENCODE_CONFIG=" + containerConfigPath,

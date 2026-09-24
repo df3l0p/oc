@@ -32,6 +32,14 @@ type Preparer interface {
 	Prepare() error
 }
 
+// BindHoster is implemented by harnesses that run the agent somewhere the
+// host's loopback isn't reachable (a container), so the model server must
+// listen on a different address. It returns the narrowest host address the
+// agent can still reach; it must never widen to a wildcard.
+type BindHoster interface {
+	BindHost() (string, error)
+}
+
 // Options selects how a harness is run.
 type Options struct {
 	// Sandbox runs the agent in a Docker container instead of on the host.

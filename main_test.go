@@ -1,6 +1,11 @@
 package main
 
-import "testing"
+import (
+	"errors"
+	"testing"
+
+	"github.com/df3l0p/oc/internal/harness"
+)
 
 func TestValidateRejectsSandboxOnlyFlagsWithoutSandbox(t *testing.T) {
 	for _, cfg := range []cliConfig{{image: "x"}, {build: true}} {
@@ -15,18 +20,34 @@ func TestValidateRejectsSandboxOnlyFlagsWithoutSandbox(t *testing.T) {
 	}
 }
 
-func TestBindHost(t *testing.T) {
+// fakeBinder is a harness that picks its own listen address.
+type fakeBinder struct {
+	harness.Harness
+	host string
+	err  error
+}
+
+func (f fakeBinder) BindHost() (string, error) { return f.host, f.err }
+
+func TestListenHost(t *testing.T) {
+	var plain harness.Harness // doesn't implement BindHoster
 	tests := []struct {
-		cfg  cliConfig
-		want string
+		name    string
+		h       harness.Harness
+		host    string
+		want    string
+		wantErr bool
 	}{
-		{cliConfig{host: defaultHost}, defaultHost},
-		{cliConfig{host: defaultHost, sandbox: true}, "0.0.0.0"},
-		{cliConfig{host: "192.168.1.5", sandbox: true}, "192.168.1.5"},
+		{"host harness keeps the default", plain, defaultHost, defaultHost, false},
+		{"container harness narrows the default", fakeBinder{host: "172.17.0.1"}, defaultHost, "172.17.0.1", false},
+		{"container harness error is returned", fakeBinder{err: errors.New("boom")}, defaultHost, "", true},
+		{"explicit host wins over the harness", fakeBinder{host: "172.17.0.1"}, "192.168.1.5", "192.168.1.5", false},
+		{"explicit wildcard is honoured", fakeBinder{host: "172.17.0.1"}, "0.0.0.0", "0.0.0.0", false},
 	}
 	for _, tt := range tests {
-		if got := tt.cfg.bindHost(); got != tt.want {
-			t.Errorf("bindHost(%+v) = %q, want %q", tt.cfg, got, tt.want)
+		got, err := listenHost(tt.h, tt.host)
+		if (err != nil) != tt.wantErr || got != tt.want {
+			t.Errorf("%s: listenHost = (%q, %v), want (%q, err=%v)", tt.name, got, err, tt.want, tt.wantErr)
 		}
 	}
 }
