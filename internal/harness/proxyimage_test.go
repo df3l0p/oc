@@ -3,7 +3,9 @@ package harness
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -22,6 +24,37 @@ func TestProxyContextLaysOutSourceForTheDockerfile(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(name))); err != nil {
 			t.Errorf("build context missing %s: %v", name, err)
 		}
+	}
+}
+
+// TestProxyContextCompilesStandalone reproduces the Dockerfile's build stage
+// with the local Go toolchain instead of Docker: it's the fast, daemon-free
+// check that proxyContext's layout is one the embedded package actually
+// compiles in (in particular, that internal/proxy/source.go's own
+// `//go:embed Dockerfile` resolves once Source is laid out under
+// internal/proxy/ in a build context, not just in the real repo tree).
+func TestProxyContextCompilesStandalone(t *testing.T) {
+	dir, err := proxyContext()
+	if err != nil {
+		t.Fatalf("proxyContext: %v", err)
+	}
+	defer os.RemoveAll(dir)
+
+	goBin := filepath.Join(runtime.GOROOT(), "bin", "go")
+
+	initCmd := exec.Command(goBin, "mod", "init", "github.com/df3l0p/oc")
+	initCmd.Dir = dir
+	if out, err := initCmd.CombinedOutput(); err != nil {
+		t.Fatalf("go mod init: %v\n%s", err, out)
+	}
+
+	out := filepath.Join(t.TempDir(), "oc-proxy")
+	buildCmd := exec.Command(goBin, "build", "-o", out, "./internal/proxy/cmd/oc-proxy")
+	buildCmd.Dir = dir
+	buildCmd.Env = append(append([]string{}, os.Environ()...),
+		"GOFLAGS=-mod=mod", "CGO_ENABLED=0", "GOWORK=off")
+	if combined, err := buildCmd.CombinedOutput(); err != nil {
+		t.Fatalf("go build ./internal/proxy/cmd/oc-proxy: %v\n%s", err, combined)
 	}
 }
 

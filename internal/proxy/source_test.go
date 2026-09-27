@@ -10,7 +10,7 @@ import (
 )
 
 func TestSourceEmbedsThePackageAndItsCommand(t *testing.T) {
-	for _, name := range []string{"proxy.go", "policy.go", "source.go", "cmd/oc-proxy/main.go"} {
+	for _, name := range []string{"proxy.go", "policy.go", "source.go", "cmd/oc-proxy/main.go", "Dockerfile"} {
 		if _, err := fs.Stat(Source, name); err != nil {
 			t.Errorf("Source is missing %s: %v", name, err)
 		}
