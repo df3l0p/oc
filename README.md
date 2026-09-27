@@ -127,12 +127,16 @@ your ownership. Only `docker` is needed on the host (not opencode).
 - **Egress:** the sandbox container has no direct network access. Instead,
   each session gets its own proxy container on a private network between the
   two, and all of the sandbox's HTTP(S) traffic is forced through it via
-  `HTTP_PROXY`/`HTTPS_PROXY`. The proxy only allows the session's
-  llama-server, `registry.npmjs.org`, `github.com` and `models.dev` (all
-  over https) and blocks everything else, including non-HTTP protocols such
-  as git over ssh. The first `-sandbox` run also builds the proxy image
-  (pulling the `golang` and `alpine` base images); both the network and the
-  proxy container are torn down when the session ends.
+  `HTTP_PROXY`/`HTTPS_PROXY`. The proxy only allows the session's model
+  server plus `registry.npmjs.org`, `github.com` and `models.dev` (the
+  latter three over https) and blocks everything else, including non-HTTP
+  protocols such as git over ssh. The proxy container itself reaches the
+  host over the default Docker bridge, same as llama-server's own listen
+  address above, so on Linux a host firewall (e.g. `ufw`) may still need to
+  allow bridge-to-host traffic, and other containers on that bridge can
+  still reach llama-server directly. The first `-sandbox` run also builds
+  the proxy image (pulling the `golang` and `alpine` base images); both the
+  network and the proxy container are torn down when the session ends.
 - Session data inside the container is discarded on exit (`--rm`).
 
 ## Notes
