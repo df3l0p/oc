@@ -4,15 +4,25 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 )
+
+// TestMain silences the package's denial logging so a passing `go test -v`
+// stays readable: TestHandleForwardBlocksUnconfiguredHost and
+// TestHandleConnectBlocksUnconfiguredHost both deliberately trigger it.
+func TestMain(m *testing.M) {
+	log.SetOutput(io.Discard)
+	os.Exit(m.Run())
+}
 
 func mustParseURL(t *testing.T, raw string) *url.URL {
 	t.Helper()
@@ -115,6 +125,26 @@ func TestHandleForwardStreamsChunksWithoutBuffering(t *testing.T) {
 	}
 }
 
+// TestHandleForwardTransportIgnoresProxyEnvVars guards against the Docker
+// CLI injecting an HTTP_PROXY into the proxy container's environment from
+// the operator's ~/.docker/config.json: the transport handleForward uses to
+// reach the target must never chase env-configured proxying.
+//
+// A behavioral variant (t.Setenv("HTTP_PROXY", ...) against a bogus listener,
+// asserting it's never dialed) was tried first, but Go's env-based proxy
+// resolution is memoized once per process the first time anything calls
+// through http.DefaultTransport's default Proxy func — which an earlier test
+// in this same binary already does — so t.Setenv has no effect on it by the
+// time this test runs, regardless of whether the fix is present. That makes
+// it an unreliable regression test, so this asserts the structural fact that
+// actually guarantees the behavior instead: the transport's Proxy field is a
+// static nil, never consulting the environment at all.
+func TestHandleForwardTransportIgnoresProxyEnvVars(t *testing.T) {
+	if forwardTransport.Proxy != nil {
+		t.Error("forwardTransport.Proxy must be nil: the proxy must never honor HTTP_PROXY/HTTPS_PROXY env vars for its own outbound requests")
+	}
+}
+
 func TestHandleForwardDropsHopByHopHeaders(t *testing.T) {
 	var gotProxyConn string
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -201,6 +231,63 @@ func TestHandleConnectTunnelsAllowedHost(t *testing.T) {
 	}
 	if string(buf) != "ping" {
 		t.Errorf("echo = %q, want %q", buf, "ping")
+	}
+}
+
+// TestHandleConnectFlushesHijackBufferedBytes covers a client that pipelines
+// its first bytes (e.g. a TLS ClientHello) onto the same write as the
+// CONNECT request: http.Server's bufio.Reader can read both in one syscall,
+// leaving the ClientHello sitting in the Hijacked reader's buffer rather
+// than on the wire. If handleConnect only wires up io.Copy(upstream, client)
+// after that, those buffered bytes are silently dropped and the tunnel
+// deadlocks waiting for a reply that never comes.
+func TestHandleConnectFlushesHijackBufferedBytes(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	received := make(chan []byte, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		buf := make([]byte, 4)
+		if _, err := io.ReadFull(conn, buf); err == nil {
+			received <- buf
+		}
+	}()
+
+	srv := &Server{Policy: NewPolicy([]string{ln.Addr().String()})}
+	px := httptest.NewServer(srv)
+	defer px.Close()
+
+	conn, err := net.Dial("tcp", mustParseURL(t, px.URL).Host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	// The CONNECT request and the "payload" go out in a single Write, so a
+	// single Read on the server side (and hence a single bufio fill) is very
+	// likely to capture both.
+	fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\nping",
+		ln.Addr().String(), ln.Addr().String())
+
+	br := bufio.NewReader(conn)
+	status := readConnectStatusLine(t, br)
+	if !strings.Contains(status, "200") {
+		t.Fatalf("CONNECT status line = %q, want 200", status)
+	}
+
+	select {
+	case buf := <-received:
+		if string(buf) != "ping" {
+			t.Errorf("upstream received %q, want %q", buf, "ping")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("upstream never received the bytes buffered alongside the CONNECT request")
 	}
 }
 

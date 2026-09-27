@@ -1,4 +1,3 @@
-// internal/proxy/source.go
 package proxy
 
 import "embed"

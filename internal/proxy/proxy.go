@@ -5,11 +5,24 @@ package proxy
 
 import (
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
 )
+
+// forwardTransport is a copy of http.DefaultTransport with proxying
+// disabled. handleForward's sandbox already reaches this server via its own
+// HTTP_PROXY/HTTPS_PROXY, but the Docker CLI can also inject an HTTP_PROXY
+// into this proxy container's own environment from the operator's
+// ~/.docker/config.json — this server must always dial the target directly,
+// never chase that.
+var forwardTransport = func() *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.Proxy = nil
+	return t
+}()
 
 // Policy decides which upstream destinations may be reached. Entries are
 // exact "host:port" strings, matching what a CONNECT target or a
@@ -51,6 +64,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	target := r.Host
 	if !s.Policy.Allows(target) {
+		log.Printf("oc-proxy: denied %s", target)
 		http.Error(w, "oc-proxy: host not allowed: "+target, http.StatusForbidden)
 		return
 	}
@@ -66,7 +80,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "oc-proxy: hijacking not supported", http.StatusInternalServerError)
 		return
 	}
-	client, _, err := hj.Hijack()
+	client, rw, err := hj.Hijack()
 	if err != nil {
 		http.Error(w, "oc-proxy: hijack: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -75,6 +89,20 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	if _, err := client.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n")); err != nil {
 		return
+	}
+
+	// A client that pipelines its first bytes (e.g. a TLS ClientHello) onto
+	// the same write as the CONNECT request can have them land in the
+	// Hijacked bufio.Reader's buffer rather than still on the wire: flush
+	// those upstream before wiring up the copies, or they're silently lost.
+	if rw != nil && rw.Reader.Buffered() > 0 {
+		buffered := make([]byte, rw.Reader.Buffered())
+		if _, err := io.ReadFull(rw.Reader, buffered); err != nil {
+			return
+		}
+		if _, err := upstream.Write(buffered); err != nil {
+			return
+		}
 	}
 
 	done := make(chan struct{}, 2)
@@ -116,6 +144,7 @@ func removeHopByHop(h http.Header) {
 func (s *Server) handleForward(w http.ResponseWriter, r *http.Request) {
 	target := hostport(r.URL)
 	if !s.Policy.Allows(target) {
+		log.Printf("oc-proxy: denied %s", target)
 		http.Error(w, "oc-proxy: host not allowed: "+target, http.StatusForbidden)
 		return
 	}
@@ -123,7 +152,7 @@ func (s *Server) handleForward(w http.ResponseWriter, r *http.Request) {
 	out.RequestURI = "" // must be empty on a client request
 	removeHopByHop(out.Header)
 
-	resp, err := http.DefaultTransport.RoundTrip(out)
+	resp, err := forwardTransport.RoundTrip(out)
 	if err != nil {
 		http.Error(w, "oc-proxy: forward: "+err.Error(), http.StatusBadGateway)
 		return
