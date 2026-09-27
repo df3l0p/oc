@@ -124,13 +124,15 @@ your ownership. Only `docker` is needed on the host (not opencode).
   wildcard like `0.0.0.0` prints a warning).
   - On Linux, an already-running server bound to `127.0.0.1` isn't reachable
     from the container, so `oc` stops with an error instead of reusing it.
-  - Remaining exposure: the container can reach every host port that is
-    listening on the address above (on macOS and Docker Desktop that means
-    anything on your localhost), not only llama-server's. On Linux, other
-    containers on the default bridge can also reach llama-server, and a host
-    firewall (e.g. `ufw`) may need to allow traffic from the bridge to the
-    host. Routing all sandbox traffic through a proxy container, which would
-    close this, is tracked in [#6](https://github.com/df3l0p/oc/issues/6).
+- **Egress:** the sandbox container has no direct network access. Instead,
+  each session gets its own proxy container on a private network between the
+  two, and all of the sandbox's HTTP(S) traffic is forced through it via
+  `HTTP_PROXY`/`HTTPS_PROXY`. The proxy only allows the session's
+  llama-server, `registry.npmjs.org`, `github.com` and `models.dev` (all
+  over https) and blocks everything else, including non-HTTP protocols such
+  as git over ssh. The first `-sandbox` run also builds the proxy image
+  (pulling the `golang` and `alpine` base images); both the network and the
+  proxy container are torn down when the session ends.
 - Session data inside the container is discarded on exit (`--rm`).
 
 ## Notes

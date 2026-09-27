@@ -20,6 +20,7 @@ func TestSandboxPrepare(t *testing.T) {
 			wantCalls: []string{
 				"image inspect oc-sandbox-base:",
 				"image inspect oc-sandbox-default:",
+				"image inspect oc-sandbox-proxy:",
 			},
 			wantImage: "oc-sandbox-default:",
 		},
@@ -31,6 +32,7 @@ func TestSandboxPrepare(t *testing.T) {
 				"image inspect oc-sandbox-base:",
 				"image inspect oc-sandbox-default:",
 				"build --build-arg OC_BASE=oc-sandbox-base:",
+				"image inspect oc-sandbox-proxy:",
 			},
 			wantImage: "oc-sandbox-default:",
 		},
@@ -43,6 +45,8 @@ func TestSandboxPrepare(t *testing.T) {
 				"build -t oc-sandbox-base:",
 				"image inspect oc-sandbox-default:",
 				"build --build-arg OC_BASE=oc-sandbox-base:",
+				"image inspect oc-sandbox-proxy:",
+				"build -t oc-sandbox-proxy:",
 			},
 			wantImage: "oc-sandbox-default:",
 		},
@@ -52,6 +56,7 @@ func TestSandboxPrepare(t *testing.T) {
 			wantCalls: []string{
 				"build --no-cache -t oc-sandbox-base:",
 				"build --no-cache --build-arg OC_BASE=oc-sandbox-base:",
+				"build --no-cache -t oc-sandbox-proxy:",
 			},
 			wantImage: "oc-sandbox-default:",
 		},
@@ -106,6 +111,9 @@ func TestSandboxPrepare(t *testing.T) {
 			}
 			if tt.wantImage != "" && !strings.HasPrefix(s.image, tt.wantImage) {
 				t.Errorf("run image = %q, want prefix %q", s.image, tt.wantImage)
+			}
+			if tt.wantErr == "" && !strings.HasPrefix(s.proxyImage, "oc-sandbox-proxy:") {
+				t.Errorf("proxyImage = %q, want prefix %q", s.proxyImage, "oc-sandbox-proxy:")
 			}
 		})
 	}

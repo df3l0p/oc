@@ -136,12 +136,17 @@ func TestSandboxRunArgs(t *testing.T) {
 	s := newSandbox(Options{Sandbox: true}, "")
 	s.image = "oc-sandbox-default:abc123" // as set by Prepare
 	s.generated = "/tmp/gen.jsonc"
+	pn := &proxyNet{network: "oc-net-1-aa", container: "oc-proxy-1-aa"}
 
-	args := s.runArgs("oc-1-aa", "/work/proj", "llama-cpp", "m1", false)
+	args := s.runArgs("oc-1-aa", "/work/proj", "llama-cpp", "m1", pn, false)
 	joined := strings.Join(args, " ")
 	for _, want := range []string{
 		"run --rm --pull=never -i --name oc-1-aa",
-		"--add-host host.docker.internal:host-gateway",
+		"--network oc-net-1-aa",
+		"-e HTTP_PROXY=http://oc-proxy-1-aa:8888",
+		"-e HTTPS_PROXY=http://oc-proxy-1-aa:8888",
+		"-e http_proxy=http://oc-proxy-1-aa:8888",
+		"-e https_proxy=http://oc-proxy-1-aa:8888",
 		"-v /work/proj:/workspace",
 		"-v /tmp/gen.jsonc:/etc/oc/opencode.jsonc:ro",
 		"-e OPENCODE_CONFIG=/etc/oc/opencode.jsonc",
@@ -151,10 +156,13 @@ func TestSandboxRunArgs(t *testing.T) {
 			t.Errorf("args missing %q:\n%s", want, joined)
 		}
 	}
+	if strings.Contains(joined, "--add-host") {
+		t.Errorf("sandbox must have no direct route to the host: %s", joined)
+	}
 	if strings.Contains(joined, " -it ") {
 		t.Errorf("-t must not be set without a TTY: %s", joined)
 	}
-	if got := strings.Join(s.runArgs("n", "/d", "p", "m", true), " "); !strings.Contains(got, " -it ") {
+	if got := strings.Join(s.runArgs("n", "/d", "p", "m", pn, true), " "); !strings.Contains(got, " -it ") {
 		t.Errorf("expected -it with a TTY: %s", got)
 	}
 }
@@ -250,26 +258,17 @@ func TestSandboxBindHost(t *testing.T) {
 	}
 }
 
-func TestSandboxRunArgsPointsContainerAtTheBoundGateway(t *testing.T) {
-	s := newSandbox(Options{Sandbox: true}, "")
-	s.image = "img"
-	s.generated = "/tmp/gen.jsonc"
-	s.hostIP = "172.17.0.1"
-	got := strings.Join(s.runArgs("n", "/d", "p", "m", false), " ")
-	if !strings.Contains(got, "--add-host host.docker.internal:172.17.0.1") {
-		t.Errorf("args missing the gateway --add-host:\n%s", got)
-	}
-}
-
 func TestSandboxRunUsesUniqueContainerNames(t *testing.T) {
 	logPath := fakeDocker(t, nil)
 	var names []string
+	var networks []string
 	for i := 0; i < 2; i++ {
 		s := newSandbox(Options{Sandbox: true}, filepath.Join(t.TempDir(), "absent.jsonc"))
 		if err := s.Configure("llama-cpp", "http://127.0.0.1:8080", []string{"m"}); err != nil {
 			t.Fatal(err)
 		}
 		s.image = "oc-sandbox-default:test" // as set by Prepare
+		s.proxyImage = "oc-sandbox-proxy:test"
 		if err := s.Run(t.TempDir(), "llama-cpp", "m"); err != nil {
 			t.Fatalf("Run: %v", err)
 		}
@@ -278,23 +277,33 @@ func TestSandboxRunUsesUniqueContainerNames(t *testing.T) {
 		}
 	}
 	for _, c := range calls(t, logPath) {
-		f := strings.Fields(c)
-		if len(f) > 3 && f[0] == "run" {
+		if strings.HasPrefix(c, "run --rm") {
+			f := strings.Fields(c)
 			names = append(names, f[5]) // run --rm --pull=never -i --name <name>
+		}
+		if strings.HasPrefix(c, "network create --internal ") {
+			networks = append(networks, strings.TrimPrefix(c, "network create --internal "))
 		}
 	}
 	if len(names) != 2 || names[0] == names[1] {
 		t.Errorf("expected two distinct container names, got %v", names)
 	}
-	// Each run is followed by a backstop rm -f of its container.
+	if len(networks) != 2 || networks[0] == networks[1] {
+		t.Errorf("expected two distinct proxy networks, got %v", networks)
+	}
+	// Each run is followed by a backstop rm -f of its (sandbox) container.
 	var rms int
 	for _, c := range calls(t, logPath) {
-		if strings.HasPrefix(c, "rm -f oc-") {
-			rms++
+		if strings.HasPrefix(c, "rm -f ") {
+			for _, n := range names {
+				if strings.HasPrefix(c, "rm -f "+n) {
+					rms++
+				}
+			}
 		}
 	}
 	if rms != 2 {
-		t.Errorf("expected 2 rm -f calls, got %d", rms)
+		t.Errorf("expected 2 rm -f calls for sandbox containers, got %d", rms)
 	}
 }
 

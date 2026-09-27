@@ -50,6 +50,12 @@ type Sandbox struct {
 	// bridge gateway IP that llama-server listens on (set by BindHost), or
 	// host-gateway when Docker provides the route itself.
 	hostIP string
+	// proxyImage is the tag of this session's egress proxy image, set by
+	// Prepare.
+	proxyImage string
+	// upstream is the "host:port" of the llama-server upstream, set by
+	// Configure.
+	upstream string
 }
 
 // hostOS is runtime.GOOS, replaceable in tests.
@@ -159,6 +165,12 @@ func (s *Sandbox) Prepare() error {
 		return err
 	}
 	s.image = tag
+
+	proxyTag, err := prepareProxyImage(s.build)
+	if err != nil {
+		return fmt.Errorf("preparing proxy image: %w", err)
+	}
+	s.proxyImage = proxyTag
 	return nil
 }
 
@@ -211,6 +223,9 @@ func (s *Sandbox) Configure(providerKey, baseURL string, modelIDs []string) erro
 	if err != nil {
 		return err
 	}
+	if u, err := url.Parse(containerURL); err == nil {
+		s.upstream = u.Host // already "host.docker.internal:<port>"
+	}
 	out, err := opencodeconfig.Render(s.hostConfig, providerKey, opencodeProvider(containerURL, modelIDs))
 	if err != nil {
 		return err
@@ -234,9 +249,15 @@ func (s *Sandbox) Run(dir, providerKey, modelID string) error {
 		return fmt.Errorf("sandbox: Configure must be called before Run")
 	}
 	defer os.Remove(s.generated)
-	if s.image == "" {
+	if s.image == "" || s.proxyImage == "" {
 		return fmt.Errorf("sandbox: Prepare must be called before Run")
 	}
+
+	pn, err := startProxyNet(s.proxyImage, s.hostIP, s.allowList())
+	if err != nil {
+		return fmt.Errorf("starting sandbox proxy: %w", err)
+	}
+	defer pn.stop()
 
 	// Unique per invocation so parallel sessions never collide, whatever port
 	// they share.
@@ -250,15 +271,30 @@ func (s *Sandbox) Run(dir, providerKey, modelID string) error {
 	// daemon noticing; --rm covers the normal path.
 	defer exec.Command("docker", "rm", "-f", name).Run()
 
-	cmd := exec.Command("docker", s.runArgs(name, dir, providerKey, modelID, stdinIsTTY())...)
+	cmd := exec.Command("docker", s.runArgs(name, dir, providerKey, modelID, pn, stdinIsTTY())...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
 }
 
-// runArgs builds the docker argv for one session.
-func (s *Sandbox) runArgs(name, dir, providerKey, modelID string, tty bool) []string {
+// allowList is the proxy policy for this session: the defaults plus the
+// llama-server upstream captured by Configure. Copied, so sessions never
+// share (or grow) defaultAllow's backing array.
+func (s *Sandbox) allowList() []string {
+	allow := append([]string(nil), defaultAllow...)
+	if s.upstream != "" {
+		allow = append(allow, s.upstream)
+	}
+	return allow
+}
+
+// runArgs builds the docker argv for one session. The sandbox no longer
+// gets a direct host.docker.internal route or unrestricted egress: it only
+// reaches pn's network, and all HTTP(S) traffic is forced through pn's
+// proxy container. Both spellings of the proxy variables are set: curl, for
+// one, ignores uppercase HTTP_PROXY.
+func (s *Sandbox) runArgs(name, dir, providerKey, modelID string, pn *proxyNet, tty bool) []string {
 	flags := "-i"
 	if tty {
 		flags = "-it"
@@ -268,7 +304,11 @@ func (s *Sandbox) runArgs(name, dir, providerKey, modelID string, tty bool) []st
 		// docker fetch one from a registry behind our back.
 		"run", "--rm", "--pull=never", flags,
 		"--name", name,
-		"--add-host", containerHost + ":" + s.hostIP,
+		"--network", pn.network,
+		"-e", "HTTP_PROXY=" + pn.proxyURL(),
+		"-e", "HTTPS_PROXY=" + pn.proxyURL(),
+		"-e", "http_proxy=" + pn.proxyURL(),
+		"-e", "https_proxy=" + pn.proxyURL(),
 		"--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
 		"-e", "HOME=" + containerHome,
 		"-e", "OPENCODE_CONFIG=" + containerConfigPath,
