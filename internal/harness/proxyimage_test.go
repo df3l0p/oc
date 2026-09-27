@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -40,7 +39,10 @@ func TestProxyContextCompilesStandalone(t *testing.T) {
 	}
 	defer os.RemoveAll(dir)
 
-	goBin := filepath.Join(runtime.GOROOT(), "bin", "go")
+	goBin, err := exec.LookPath("go")
+	if err != nil {
+		t.Skip("go not found on PATH: " + err.Error())
+	}
 
 	initCmd := exec.Command(goBin, "mod", "init", "github.com/df3l0p/oc")
 	initCmd.Dir = dir

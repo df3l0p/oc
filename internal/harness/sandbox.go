@@ -18,8 +18,11 @@ import (
 )
 
 const (
-	// containerHost is how a container reaches the host's network namespace.
-	// Docker Desktop provides it; on Linux runArgs adds it with --add-host.
+	// containerHost is how the proxy container reaches the host's network
+	// namespace. Docker Desktop provides it; on Linux startProxyNet adds it
+	// with --add-host. The sandbox container itself never resolves it: all
+	// its egress, including to the host's llama-server, goes through the
+	// proxy instead.
 	containerHost = "host.docker.internal"
 	// containerConfigPath is where the generated config is mounted. It's kept
 	// out of the agent's own config directory so docker doesn't create that
@@ -29,8 +32,10 @@ const (
 	containerHome       = "/home/oc"
 )
 
-// Sandbox runs opencode in a Docker container. The container reaches the
-// host's llama-server via host.docker.internal, mounts the working directory,
+// Sandbox runs opencode in a Docker container. The container has no direct
+// route to the host; it reaches the host's llama-server through its
+// per-session egress proxy, which is the one that resolves
+// host.docker.internal. The sandbox container mounts the working directory
 // and uses a generated copy of the host's opencode config with the provider
 // baseURL rewritten to be container-reachable; the host config itself is never
 // modified. It needs docker, not opencode, on the host.
@@ -46,9 +51,9 @@ type Sandbox struct {
 	// generated is the temp file written by Configure and mounted into the
 	// container; removed when Run returns.
 	generated string
-	// hostIP is what containerHost resolves to inside the container: the
-	// bridge gateway IP that llama-server listens on (set by BindHost), or
-	// host-gateway when Docker provides the route itself.
+	// hostIP is what containerHost resolves to inside the proxy container:
+	// the bridge gateway IP that llama-server listens on (set by BindHost),
+	// or host-gateway when Docker provides the route itself.
 	hostIP string
 	// proxyImage is the tag of this session's egress proxy image, set by
 	// Prepare.
@@ -309,6 +314,10 @@ func (s *Sandbox) runArgs(name, dir, providerKey, modelID string, pn *proxyNet, 
 		"-e", "HTTPS_PROXY=" + pn.proxyURL(),
 		"-e", "http_proxy=" + pn.proxyURL(),
 		"-e", "https_proxy=" + pn.proxyURL(),
+		// Loopback inside the sandbox is its own network namespace, not the
+		// host's or the proxy's — never send it through the proxy.
+		"-e", "NO_PROXY=localhost,127.0.0.1,::1",
+		"-e", "no_proxy=localhost,127.0.0.1,::1",
 		"--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
 		"-e", "HOME=" + containerHome,
 		"-e", "OPENCODE_CONFIG=" + containerConfigPath,

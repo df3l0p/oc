@@ -1,4 +1,3 @@
-// internal/harness/proxyimage.go
 package harness
 
 import (

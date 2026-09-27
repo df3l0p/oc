@@ -122,6 +122,9 @@ func TestSandboxConfigureGeneratesRewrittenCopyAndLeavesHostConfigAlone(t *testi
 	if u := block["options"].(map[string]interface{})["baseURL"]; u != "http://host.docker.internal:8080/v1" {
 		t.Errorf("baseURL = %v, want host.docker.internal", u)
 	}
+	if s.upstream != "host.docker.internal:8080" {
+		t.Errorf("s.upstream = %q, want %q", s.upstream, "host.docker.internal:8080")
+	}
 }
 
 func TestSandboxConfigureWithMissingHostConfig(t *testing.T) {
@@ -147,6 +150,8 @@ func TestSandboxRunArgs(t *testing.T) {
 		"-e HTTPS_PROXY=http://oc-proxy-1-aa:8888",
 		"-e http_proxy=http://oc-proxy-1-aa:8888",
 		"-e https_proxy=http://oc-proxy-1-aa:8888",
+		"-e NO_PROXY=localhost,127.0.0.1,::1",
+		"-e no_proxy=localhost,127.0.0.1,::1",
 		"-v /work/proj:/workspace",
 		"-v /tmp/gen.jsonc:/etc/oc/opencode.jsonc:ro",
 		"-e OPENCODE_CONFIG=/etc/oc/opencode.jsonc",

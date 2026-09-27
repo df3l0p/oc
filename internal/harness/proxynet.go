@@ -1,4 +1,3 @@
-// internal/harness/proxynet.go
 package harness
 
 import (
@@ -8,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 )
 
 const proxyListenAddr = "8888"
@@ -42,9 +42,13 @@ func startProxyNet(image, hostIP string, allow []string) (*proxyNet, error) {
 	}
 	id := fmt.Sprintf("%d-%s", os.Getpid(), hex.EncodeToString(suffix[:]))
 	p := &proxyNet{network: "oc-net-" + id, container: "oc-proxy-" + id}
+	// Same id as the network/container names, so `docker ... --filter
+	// label=oc.session=<id>` (or plain `docker ps`/`network ls`) ties both
+	// of one session's resources together.
+	label := "oc.session=" + id
 
-	if err := exec.Command("docker", "network", "create", "--internal", p.network).Run(); err != nil {
-		return nil, fmt.Errorf("creating proxy network: %w", err)
+	if out, err := exec.Command("docker", "network", "create", "--internal", "--label", label, p.network).CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("creating proxy network: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 
 	policyPath, err := writePolicyFile(allow)
@@ -55,19 +59,25 @@ func startProxyNet(image, hostIP string, allow []string) (*proxyNet, error) {
 	p.policyFile = policyPath
 
 	runArgs := []string{
-		"run", "-d", "--name", p.container,
+		// --rm: session data inside the proxy container is discarded on
+		// exit, same as the sandbox container. --pull=never: prepareProxyImage
+		// already ensured the image locally; never let docker fetch one from
+		// a registry behind our back.
+		"run", "-d", "--rm", "--pull=never",
+		"--name", p.container,
+		"--label", label,
 		"--add-host", containerHost + ":" + hostIP,
 		"-v", policyPath + ":/etc/oc-proxy/policy.json:ro",
 		image,
 	}
-	if err := exec.Command("docker", runArgs...).Run(); err != nil {
+	if out, err := exec.Command("docker", runArgs...).CombinedOutput(); err != nil {
 		p.stop()
-		return nil, fmt.Errorf("starting proxy container: %w", err)
+		return nil, fmt.Errorf("starting proxy container: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 
-	if err := exec.Command("docker", "network", "connect", p.network, p.container).Run(); err != nil {
+	if out, err := exec.Command("docker", "network", "connect", p.network, p.container).CombinedOutput(); err != nil {
 		p.stop()
-		return nil, fmt.Errorf("connecting proxy container to its network: %w", err)
+		return nil, fmt.Errorf("connecting proxy container to its network: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 
 	return p, nil

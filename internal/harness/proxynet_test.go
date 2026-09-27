@@ -15,14 +15,41 @@ func TestStartProxyNetCreatesNetworkThenContainerThenConnectsBridge(t *testing.T
 	}
 	defer p.stop()
 
+	// The same session id backs the network name, the container name, and
+	// the oc.session label on both, so an operator can correlate all three
+	// (and docker ps/network ls --filter by it).
+	id := strings.TrimPrefix(p.network, "oc-net-")
+	if id == "" || id == p.network {
+		t.Fatalf("could not derive session id from network name %q", p.network)
+	}
+	label := "oc.session=" + id
+
 	calls := calls(t, logPath)
 	var netCreateIdx, runIdx, connectIdx = -1, -1, -1
 	for i, c := range calls {
 		switch {
-		case strings.HasPrefix(c, "network create --internal "+p.network):
+		case strings.HasPrefix(c, "network create --internal "):
 			netCreateIdx = i
-		case strings.HasPrefix(c, "run -d --name "+p.container):
+			if !strings.Contains(c, "--label "+label) {
+				t.Errorf("network create args missing the session label: %s", c)
+			}
+			if !strings.Contains(c, p.network) {
+				t.Errorf("network create args missing the network name: %s", c)
+			}
+		case strings.HasPrefix(c, "run -d "):
 			runIdx = i
+			if !strings.Contains(c, "--name "+p.container) {
+				t.Errorf("proxy run args missing --name %s: %s", p.container, c)
+			}
+			if !strings.Contains(c, "--rm") {
+				t.Errorf("proxy run args missing --rm: %s", c)
+			}
+			if !strings.Contains(c, "--pull=never") {
+				t.Errorf("proxy run args missing --pull=never: %s", c)
+			}
+			if !strings.Contains(c, "--label "+label) {
+				t.Errorf("proxy run args missing the session label: %s", c)
+			}
 			if !strings.Contains(c, "--add-host host.docker.internal:172.17.0.1") {
 				t.Errorf("proxy run args missing the host add-host: %s", c)
 			}
@@ -94,7 +121,8 @@ func TestStartProxyNetCleansUpTheNetworkWhenTheContainerFailsToStart(t *testing.
 	var created, removed string
 	for _, c := range calls(t, logPath) {
 		if strings.HasPrefix(c, "network create --internal ") {
-			created = strings.TrimPrefix(c, "network create --internal ")
+			f := strings.Fields(c)
+			created = f[len(f)-1] // network create --internal --label <label> <network>
 		}
 		if strings.HasPrefix(c, "network rm ") {
 			removed = strings.TrimPrefix(c, "network rm ")
@@ -102,6 +130,24 @@ func TestStartProxyNetCleansUpTheNetworkWhenTheContainerFailsToStart(t *testing.
 	}
 	if created == "" || removed != created {
 		t.Errorf("network %q was created but %q was removed; a failed start must not leak it", created, removed)
+	}
+}
+
+// TestStartProxyNetSurfacesDockerStderr checks that a docker failure's own
+// stderr output ends up in the returned error, not just docker's bare exit
+// status: that's the only clue an operator sees, since oc never runs docker
+// with its own stdout/stderr wired to the terminal here.
+func TestStartProxyNetSurfacesDockerStderr(t *testing.T) {
+	fakeDockerOutput(t,
+		map[string]int{"network create": 1},
+		map[string]string{"network create": "Error response from daemon: pool overlaps with other one on this address space"},
+	)
+	_, err := startProxyNet("oc-proxy:test", "172.17.0.1", nil)
+	if err == nil {
+		t.Fatal("expected an error when network create fails")
+	}
+	if !strings.Contains(err.Error(), "pool overlaps with other one on this address space") {
+		t.Errorf("error = %v, want it to include docker's own output", err)
 	}
 }
 
