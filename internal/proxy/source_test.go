@@ -1,4 +1,3 @@
-// internal/proxy/source_test.go
 package proxy
 
 import (
@@ -48,8 +47,17 @@ func TestSourceImportsOnlyTheStandardLibrary(t *testing.T) {
 	}
 }
 
-func TestDockerfileBuildsTheEmbeddedCommand(t *testing.T) {
-	if !strings.Contains(string(Dockerfile), "./internal/proxy/cmd/oc-proxy") {
-		t.Errorf("Dockerfile doesn't build ./internal/proxy/cmd/oc-proxy:\n%s", Dockerfile)
+// Source is the build context as-is, so the Dockerfile must build from the
+// package root, with a module path under which main's import of this package
+// still resolves.
+func TestDockerfileBuildsTheEmbeddedCommandFromThePackageRoot(t *testing.T) {
+	dockerfile, err := fs.ReadFile(Source, "Dockerfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"go mod init github.com/df3l0p/oc/internal/proxy", "./cmd/oc-proxy"} {
+		if !strings.Contains(string(dockerfile), want) {
+			t.Errorf("Dockerfile doesn't contain %q:\n%s", want, dockerfile)
+		}
 	}
 }

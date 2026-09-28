@@ -1,102 +1,55 @@
 package harness
 
 import (
+	"archive/tar"
 	"bytes"
 	"fmt"
-	"io/fs"
 	"os"
 	"os/exec"
-	"path/filepath"
 
 	"github.com/df3l0p/oc/internal/proxy"
 )
 
-// proxyContext writes the proxy image's build context to a fresh temp dir:
-// the Dockerfile at its root and proxy.Source under internal/proxy/, the
-// layout the Dockerfile's `go build ./internal/proxy/cmd/oc-proxy` expects.
-// The caller removes it.
-func proxyContext() (string, error) {
-	dir, err := os.MkdirTemp("", "oc-proxy-ctx-*")
-	if err != nil {
-		return "", fmt.Errorf("creating proxy build context: %w", err)
+// proxyContext returns the proxy image's build context as a tar archive of
+// proxy.Source as-is: the package's source with its Dockerfile at the root.
+// oc usually runs without a checkout, so the embedded copy is the only one it
+// has; streaming it to `docker build -` means nothing is written to disk.
+// The archive is deterministic (embedded files carry no timestamps), so it
+// also serves as the image tag's hash input.
+func proxyContext() ([]byte, error) {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	if err := tw.AddFS(proxy.Source); err != nil {
+		return nil, fmt.Errorf("archiving proxy source: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), proxy.Dockerfile, 0o644); err != nil {
-		os.RemoveAll(dir)
-		return "", fmt.Errorf("writing proxy Dockerfile: %w", err)
+	if err := tw.Close(); err != nil {
+		return nil, fmt.Errorf("archiving proxy source: %w", err)
 	}
-	root := filepath.Join(dir, "internal", "proxy")
-	err = fs.WalkDir(proxy.Source, ".", func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		dst := filepath.Join(root, filepath.FromSlash(p))
-		if d.IsDir() {
-			return os.MkdirAll(dst, 0o755)
-		}
-		b, err := fs.ReadFile(proxy.Source, p)
-		if err != nil {
-			return err
-		}
-		return os.WriteFile(dst, b, 0o644)
-	})
-	if err != nil {
-		os.RemoveAll(dir)
-		return "", fmt.Errorf("writing proxy source: %w", err)
-	}
-	return dir, nil
-}
-
-// proxyImageTag names the proxy image by a hash of its Dockerfile and every
-// embedded source file (path and content), so any change to the proxy's code
-// builds a new image and an unchanged one is reused.
-func proxyImageTag() (string, error) {
-	var in bytes.Buffer
-	in.Write(proxy.Dockerfile)
-	err := fs.WalkDir(proxy.Source, ".", func(p string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return err
-		}
-		b, err := fs.ReadFile(proxy.Source, p)
-		if err != nil {
-			return err
-		}
-		in.WriteByte(0)
-		in.WriteString(p)
-		in.WriteByte(0)
-		in.Write(b)
-		return nil
-	})
-	if err != nil {
-		return "", fmt.Errorf("hashing proxy source: %w", err)
-	}
-	return imageTag("proxy", in.Bytes(), ""), nil
+	return buf.Bytes(), nil
 }
 
 // prepareProxyImage makes sure the proxy image exists locally, building it
 // from the embedded source if it's missing, or always (without docker's layer
 // cache) when build is set — the same rules Sandbox.Prepare applies to the
-// sandbox images. Never pulled.
+// sandbox images. Never pulled. The tag hashes the whole build context, so
+// any change to the proxy's code builds a new image.
 func prepareProxyImage(build bool) (string, error) {
-	tag, err := proxyImageTag()
+	context, err := proxyContext()
 	if err != nil {
 		return "", err
 	}
+	tag := imageTag("proxy", context, "")
 	if !build && exec.Command("docker", "image", "inspect", tag).Run() == nil {
 		return tag, nil
 	}
 
-	dir, err := proxyContext()
-	if err != nil {
-		return "", err
-	}
-	defer os.RemoveAll(dir)
-
 	fmt.Fprintf(os.Stderr, "oc: building %s\n", tag)
-	args := []string{"build", "-t", tag, dir}
+	args := []string{"build", "-t", tag, "-"}
 	if build {
-		args = []string{"build", "--no-cache", "-t", tag, dir}
+		args = []string{"build", "--no-cache", "-t", tag, "-"}
 	}
 	cmd := exec.Command("docker", args...)
+	cmd.Stdin = bytes.NewReader(context)
 	cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
 	if err := cmd.Run(); err != nil {
 		return "", fmt.Errorf("building %s: %w", tag, err)
