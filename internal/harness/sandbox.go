@@ -58,9 +58,10 @@ type Sandbox struct {
 	// proxyImage is the tag of this session's egress proxy image, set by
 	// Prepare.
 	proxyImage string
-	// upstream is the "host:port" of the llama-server upstream, set by
-	// Configure.
-	upstream string
+	// modelServer is llama-server's "host:port" as the proxy container reaches
+	// it (host.docker.internal:<port>), set by Configure. It's added to the
+	// proxy's allow-list; it is not the proxy's own address.
+	modelServer string
 }
 
 // hostOS is runtime.GOOS, replaceable in tests.
@@ -229,7 +230,7 @@ func (s *Sandbox) Configure(providerKey, baseURL string, modelIDs []string) erro
 		return err
 	}
 	if u, err := url.Parse(containerURL); err == nil {
-		s.upstream = u.Host // already "host.docker.internal:<port>"
+		s.modelServer = u.Host // already "host.docker.internal:<port>"
 	}
 	out, err := opencodeconfig.Render(s.hostConfig, providerKey, opencodeProvider(containerURL, modelIDs))
 	if err != nil {
@@ -258,7 +259,7 @@ func (s *Sandbox) Run(dir, providerKey, modelID string) error {
 		return fmt.Errorf("sandbox: Prepare must be called before Run")
 	}
 
-	pn, err := startProxyNet(s.proxyImage, s.hostIP, s.allowList())
+	pn, err := startProxyNet(s.proxyImage, s.hostIP, s.policy())
 	if err != nil {
 		return fmt.Errorf("starting sandbox proxy: %w", err)
 	}
@@ -283,15 +284,16 @@ func (s *Sandbox) Run(dir, providerKey, modelID string) error {
 	return cmd.Run()
 }
 
-// allowList is the proxy policy for this session: the defaults plus the
-// llama-server upstream captured by Configure. Copied, so sessions never
-// share (or grow) defaultAllow's backing array.
-func (s *Sandbox) allowList() []string {
-	allow := append([]string(nil), defaultAllow...)
-	if s.upstream != "" {
-		allow = append(allow, s.upstream)
+// policy is this session's proxy allow-list: the shipped defaults plus
+// llama-server. Built fresh each call, so sessions never share or change
+// defaultPolicy.
+func (s *Sandbox) policy() []byte {
+	var b bytes.Buffer
+	b.Write(defaultPolicy)
+	if s.modelServer != "" {
+		b.WriteString("\n# this session's llama-server\n" + s.modelServer + "\n")
 	}
-	return allow
+	return b.Bytes()
 }
 
 // runArgs builds the docker argv for one session. The sandbox no longer

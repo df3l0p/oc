@@ -2,8 +2,8 @@ package harness
 
 import (
 	"crypto/rand"
+	_ "embed"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,14 +12,11 @@ import (
 
 const proxyListenAddr = "8888"
 
-// defaultAllow is what every sandbox may reach besides its llama-server:
-// package installs, git over https from GitHub, and the model catalog
-// opencode fetches at startup. Everything else is blocked by the proxy.
-var defaultAllow = []string{
-	"registry.npmjs.org:443",
-	"github.com:443",
-	"models.dev:443",
-}
+// defaultPolicy is what every sandbox may reach besides its llama-server, in
+// the proxy's policy format (see proxy.ParsePolicy).
+//
+//go:embed policy.txt
+var defaultPolicy []byte
 
 // proxyNet is one session's dedicated egress path: an --internal Docker
 // network only the proxy container can escape (it also joins the default
@@ -33,9 +30,9 @@ type proxyNet struct {
 
 // startProxyNet creates this session's network and proxy container. hostIP
 // is the address the proxy container uses to reach the host (the same value
-// Sandbox.hostIP already computes for host.docker.internal). allow is the
-// initial policy's allow-list.
-func startProxyNet(image, hostIP string, allow []string) (*proxyNet, error) {
+// Sandbox.hostIP already computes for host.docker.internal). policy is the
+// proxy's allow-list, in the proxy's policy format.
+func startProxyNet(image, hostIP string, policy []byte) (*proxyNet, error) {
 	var suffix [4]byte
 	if _, err := rand.Read(suffix[:]); err != nil {
 		return nil, fmt.Errorf("generating proxy network name: %w", err)
@@ -51,7 +48,7 @@ func startProxyNet(image, hostIP string, allow []string) (*proxyNet, error) {
 		return nil, fmt.Errorf("creating proxy network: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 
-	policyPath, err := writePolicyFile(allow)
+	policyPath, err := writePolicyFile(policy)
 	if err != nil {
 		p.stop()
 		return nil, err
@@ -67,7 +64,7 @@ func startProxyNet(image, hostIP string, allow []string) (*proxyNet, error) {
 		"--name", p.container,
 		"--label", label,
 		"--add-host", containerHost + ":" + hostIP,
-		"-v", policyPath + ":/etc/oc-proxy/policy.json:ro",
+		"-v", policyPath + ":/etc/oc-proxy/policy.txt:ro",
 		image,
 	}
 	if out, err := exec.Command("docker", runArgs...).CombinedOutput(); err != nil {
@@ -83,24 +80,15 @@ func startProxyNet(image, hostIP string, allow []string) (*proxyNet, error) {
 	return p, nil
 }
 
-// writePolicyFile renders allow as the proxy's policy JSON to a private temp
-// file, returning its path. The caller owns cleanup.
-func writePolicyFile(allow []string) (string, error) {
-	if allow == nil {
-		allow = []string{}
-	}
-	raw, err := json.Marshal(struct {
-		Allow []string `json:"allow"`
-	}{allow})
-	if err != nil {
-		return "", fmt.Errorf("encoding proxy policy: %w", err)
-	}
-	f, err := os.CreateTemp("", "oc-proxy-policy-*.json")
+// writePolicyFile writes policy to a private temp file, returning its path.
+// The caller owns cleanup.
+func writePolicyFile(policy []byte) (string, error) {
+	f, err := os.CreateTemp("", "oc-proxy-policy-*.txt")
 	if err != nil {
 		return "", fmt.Errorf("creating proxy policy file: %w", err)
 	}
 	defer f.Close()
-	if _, err := f.Write(raw); err != nil {
+	if _, err := f.Write(policy); err != nil {
 		os.Remove(f.Name())
 		return "", fmt.Errorf("writing proxy policy file: %w", err)
 	}

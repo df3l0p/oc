@@ -1,15 +1,18 @@
 package harness
 
 import (
+	"bytes"
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/df3l0p/oc/internal/proxy"
 )
 
 func TestStartProxyNetCreatesNetworkThenContainerThenConnectsBridge(t *testing.T) {
 	logPath := fakeDocker(t, nil)
 
-	p, err := startProxyNet("oc-proxy:test", "172.17.0.1", []string{"host.docker.internal:8080"})
+	p, err := startProxyNet("oc-proxy:test", "172.17.0.1", []byte("host.docker.internal:8080\n"))
 	if err != nil {
 		t.Fatalf("startProxyNet: %v", err)
 	}
@@ -53,6 +56,9 @@ func TestStartProxyNetCreatesNetworkThenContainerThenConnectsBridge(t *testing.T
 			if !strings.Contains(c, "--add-host host.docker.internal:172.17.0.1") {
 				t.Errorf("proxy run args missing the host add-host: %s", c)
 			}
+			if !strings.Contains(c, ":/etc/oc-proxy/policy.txt:ro") {
+				t.Errorf("proxy run args missing the policy.txt mount: %s", c)
+			}
 			if !strings.Contains(c, "oc-proxy:test") {
 				t.Errorf("proxy run args missing the image: %s", c)
 			}
@@ -68,9 +74,10 @@ func TestStartProxyNetCreatesNetworkThenContainerThenConnectsBridge(t *testing.T
 	}
 }
 
-func TestStartProxyNetWritesAnAllowListedPolicyFile(t *testing.T) {
+func TestStartProxyNetWritesThePolicyFile(t *testing.T) {
 	fakeDocker(t, nil)
-	p, err := startProxyNet("oc-proxy:test", "172.17.0.1", []string{"host.docker.internal:8080"})
+	policy := []byte("# comment\nhost.docker.internal:8080\n")
+	p, err := startProxyNet("oc-proxy:test", "172.17.0.1", policy)
 	if err != nil {
 		t.Fatalf("startProxyNet: %v", err)
 	}
@@ -82,8 +89,8 @@ func TestStartProxyNetWritesAnAllowListedPolicyFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading generated policy file: %v", err)
 	}
-	if !strings.Contains(string(raw), "host.docker.internal:8080") {
-		t.Errorf("policy file missing the expected allow entry: %s", raw)
+	if !bytes.Equal(raw, policy) {
+		t.Errorf("policy file = %q, want %q", raw, policy)
 	}
 }
 
@@ -151,20 +158,37 @@ func TestStartProxyNetSurfacesDockerStderr(t *testing.T) {
 	}
 }
 
-func TestSandboxAllowListIsDefaultsPlusUpstream(t *testing.T) {
-	s := newSandbox(Options{Sandbox: true}, "")
-	s.upstream = "host.docker.internal:8080"
-	got := strings.Join(s.allowList(), " ")
-	for _, want := range []string{"host.docker.internal:8080", "registry.npmjs.org:443", "github.com:443", "models.dev:443"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("allow-list %q missing %q", got, want)
+// The shipped defaults must parse with the proxy's own parser: a typo in
+// policy.txt would otherwise only surface as a proxy that fails to start.
+func TestDefaultPolicyParses(t *testing.T) {
+	pol, err := proxy.ParsePolicy(bytes.NewReader(defaultPolicy))
+	if err != nil {
+		t.Fatalf("policy.txt: %v", err)
+	}
+	for _, want := range []string{"registry.npmjs.org:443", "github.com:443", "models.dev:443"} {
+		if !pol.Allows(want) {
+			t.Errorf("default policy doesn't allow %s", want)
 		}
 	}
-	// allowList must not grow defaultAllow's backing array across sessions.
+}
+
+func TestSandboxPolicyIsDefaultsPlusModelServer(t *testing.T) {
+	s := newSandbox(Options{Sandbox: true}, "")
+	s.modelServer = "host.docker.internal:8080"
+	pol, err := proxy.ParsePolicy(bytes.NewReader(s.policy()))
+	if err != nil {
+		t.Fatalf("ParsePolicy(s.policy()): %v", err)
+	}
+	for _, want := range []string{"host.docker.internal:8080", "registry.npmjs.org:443", "github.com:443", "models.dev:443"} {
+		if !pol.Allows(want) {
+			t.Errorf("session policy doesn't allow %s", want)
+		}
+	}
+	// Building one session's policy must not change the shared defaults.
 	s2 := newSandbox(Options{Sandbox: true}, "")
-	s2.upstream = "host.docker.internal:9090"
-	s2.allowList()
-	if strings.Contains(strings.Join(s.allowList(), " "), "9090") {
-		t.Error("one session's upstream leaked into another's allow-list")
+	s2.modelServer = "host.docker.internal:9090"
+	s2.policy()
+	if bytes.Contains(s.policy(), []byte("9090")) || bytes.Contains(defaultPolicy, []byte("9090")) {
+		t.Error("one session's model server leaked into another's policy")
 	}
 }

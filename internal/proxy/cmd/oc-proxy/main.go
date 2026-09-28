@@ -14,7 +14,7 @@ import (
 
 func main() {
 	addr := flag.String("addr", ":8888", "address to listen on")
-	policyPath := flag.String("policy", "/etc/oc-proxy/policy.json", "path to the allow-list policy file")
+	policyPath := flag.String("policy", "/etc/oc-proxy/policy.txt", "path to the allow-list policy file (one host:port per line)")
 	flag.Parse()
 
 	pol, err := proxy.LoadPolicy(*policyPath)

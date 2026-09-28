@@ -134,10 +134,11 @@ opencode).
   `HTTP_PROXY`/`HTTPS_PROXY`. The proxy only allows the session's model
   server plus `registry.npmjs.org`, `github.com` and `models.dev` (the
   latter three over https) and blocks everything else, including non-HTTP
-  protocols such as git over ssh. There is no way to extend that allow-list
-  yet; a blocked host shows up to the agent as a 403 response from
-  `oc-proxy`. The proxy container itself reaches the
-  host over the default Docker bridge, same as llama-server's own listen
+  protocols such as git over ssh. Those defaults live in
+  `internal/harness/policy.txt` (one `host:port` per line), built into `oc`;
+  there's no way to extend them at run time yet. A blocked host shows up to
+  the agent as a 403 response from `oc-proxy`. The proxy container itself
+  reaches the host over the default Docker bridge, same as llama-server's own listen
   address above, so on Linux a host firewall (e.g. `ufw`) may still need to
   allow bridge-to-host traffic, and other containers on that bridge can
   still reach llama-server directly. The first `-sandbox` run also builds

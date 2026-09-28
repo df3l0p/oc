@@ -122,8 +122,8 @@ func TestSandboxConfigureGeneratesRewrittenCopyAndLeavesHostConfigAlone(t *testi
 	if u := block["options"].(map[string]interface{})["baseURL"]; u != "http://host.docker.internal:8080/v1" {
 		t.Errorf("baseURL = %v, want host.docker.internal", u)
 	}
-	if s.upstream != "host.docker.internal:8080" {
-		t.Errorf("s.upstream = %q, want %q", s.upstream, "host.docker.internal:8080")
+	if s.modelServer != "host.docker.internal:8080" {
+		t.Errorf("s.modelServer = %q, want %q", s.modelServer, "host.docker.internal:8080")
 	}
 }
 
