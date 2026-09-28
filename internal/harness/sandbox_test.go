@@ -264,7 +264,7 @@ func TestSandboxBindHost(t *testing.T) {
 }
 
 func TestSandboxRunUsesUniqueContainerNames(t *testing.T) {
-	logPath := fakeDocker(t, nil)
+	logPath := fakeDockerProxy(t, nil, nil)
 	var names []string
 	var networks []string
 	for i := 0; i < 2; i++ {

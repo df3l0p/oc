@@ -8,9 +8,16 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 const proxyListenAddr = "8888"
+
+// proxyReadyLine is what oc-proxy prints once its port is bound.
+const proxyReadyLine = "oc-proxy: listening on"
+
+// proxyReadyTimeout bounds how long startProxyNet waits for proxyReadyLine.
+const proxyReadyTimeout = 10 * time.Second
 
 // defaultPolicy is what every sandbox may reach besides its llama-server, in
 // the proxy's policy format (see proxy.ParsePolicy).
@@ -56,11 +63,11 @@ func startProxyNet(image, hostIP string, policy []byte) (*proxyNet, error) {
 	p.policyFile = policyPath
 
 	runArgs := []string{
-		// --rm: session data inside the proxy container is discarded on
-		// exit, same as the sandbox container. --pull=never: prepareProxyImage
-		// already ensured the image locally; never let docker fetch one from
-		// a registry behind our back.
-		"run", "-d", "--rm", "--pull=never",
+		// No --rm: if oc-proxy dies at startup its logs are the only clue
+		// why, and stop() removes the container anyway. --pull=never:
+		// prepareProxyImage already ensured the image locally; never let
+		// docker fetch one from a registry behind our back.
+		"run", "-d", "--pull=never",
 		"--name", p.container,
 		"--label", label,
 		"--add-host", containerHost + ":" + hostIP,
@@ -77,7 +84,32 @@ func startProxyNet(image, hostIP string, policy []byte) (*proxyNet, error) {
 		return nil, fmt.Errorf("connecting proxy container to its network: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 
+	if err := p.waitReady(); err != nil {
+		p.stop()
+		return nil, err
+	}
 	return p, nil
+}
+
+// waitReady blocks until oc-proxy reports it's listening, so the sandbox
+// never starts against a proxy that died at startup. On failure the error
+// carries the proxy's own output, the only clue why.
+func (p *proxyNet) waitReady() error {
+	deadline := time.Now().Add(proxyReadyTimeout)
+	for {
+		logs, _ := exec.Command("docker", "logs", p.container).CombinedOutput()
+		if strings.Contains(string(logs), proxyReadyLine) {
+			return nil
+		}
+		running, _ := exec.Command("docker", "inspect", "-f", "{{.State.Running}}", p.container).Output()
+		if strings.TrimSpace(string(running)) != "true" {
+			return fmt.Errorf("proxy container exited at startup: %s", strings.TrimSpace(string(logs)))
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("proxy container didn't report ready within %s: %s", proxyReadyTimeout, strings.TrimSpace(string(logs)))
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 // writePolicyFile writes policy to a private temp file, returning its path.

@@ -9,8 +9,19 @@ import (
 	"github.com/df3l0p/oc/internal/proxy"
 )
 
+// fakeDockerProxy is fakeDockerOutput for code that starts the proxy: its
+// `docker logs` reports oc-proxy as listening, the way a healthy one does.
+func fakeDockerProxy(t *testing.T, exitFor map[string]int, stdoutFor map[string]string) string {
+	t.Helper()
+	out := map[string]string{"logs": "oc-proxy: listening on [::]:8888"}
+	for prefix, text := range stdoutFor {
+		out[prefix] = text
+	}
+	return fakeDockerOutput(t, exitFor, out)
+}
+
 func TestStartProxyNetCreatesNetworkThenContainerThenConnectsBridge(t *testing.T) {
-	logPath := fakeDocker(t, nil)
+	logPath := fakeDockerProxy(t, nil, nil)
 
 	p, err := startProxyNet("oc-proxy:test", "172.17.0.1", []byte("host.docker.internal:8080\n"))
 	if err != nil {
@@ -44,8 +55,10 @@ func TestStartProxyNetCreatesNetworkThenContainerThenConnectsBridge(t *testing.T
 			if !strings.Contains(c, "--name "+p.container) {
 				t.Errorf("proxy run args missing --name %s: %s", p.container, c)
 			}
-			if !strings.Contains(c, "--rm") {
-				t.Errorf("proxy run args missing --rm: %s", c)
+			// Not --rm: if oc-proxy dies at startup, its logs are the only
+			// clue, and stop() removes the container anyway.
+			if strings.Contains(c, "--rm") {
+				t.Errorf("proxy run args must not use --rm: %s", c)
 			}
 			if !strings.Contains(c, "--pull=never") {
 				t.Errorf("proxy run args missing --pull=never: %s", c)
@@ -75,7 +88,7 @@ func TestStartProxyNetCreatesNetworkThenContainerThenConnectsBridge(t *testing.T
 }
 
 func TestStartProxyNetWritesThePolicyFile(t *testing.T) {
-	fakeDocker(t, nil)
+	fakeDockerProxy(t, nil, nil)
 	policy := []byte("# comment\nhost.docker.internal:8080\n")
 	p, err := startProxyNet("oc-proxy:test", "172.17.0.1", policy)
 	if err != nil {
@@ -95,7 +108,7 @@ func TestStartProxyNetWritesThePolicyFile(t *testing.T) {
 }
 
 func TestProxyNetStopTearsDownContainerThenNetwork(t *testing.T) {
-	logPath := fakeDocker(t, nil)
+	logPath := fakeDockerProxy(t, nil, nil)
 	p, err := startProxyNet("oc-proxy:test", "172.17.0.1", nil)
 	if err != nil {
 		t.Fatalf("startProxyNet: %v", err)
@@ -190,5 +203,41 @@ func TestSandboxPolicyIsDefaultsPlusModelServer(t *testing.T) {
 	s2.policy()
 	if bytes.Contains(s.policy(), []byte("9090")) || bytes.Contains(defaultPolicy, []byte("9090")) {
 		t.Error("one session's model server leaked into another's policy")
+	}
+}
+
+// If oc-proxy exits at startup, startProxyNet must fail with its output (the
+// only clue why) and clean up, instead of starting a sandbox whose every
+// request would then fail.
+func TestStartProxyNetFailsWithTheProxyOutputWhenItExitsAtStartup(t *testing.T) {
+	const why = "oc-proxy: parsing policy file /etc/oc-proxy/policy.txt: line 3: \"github.com\" is not host:port"
+	logPath := fakeDockerOutput(t, nil, map[string]string{"logs": why, "inspect -f": "false"})
+	_, err := startProxyNet("oc-proxy:test", "172.17.0.1", nil)
+	if err == nil {
+		t.Fatal("expected an error when the proxy container exits at startup")
+	}
+	if !strings.Contains(err.Error(), "line 3") {
+		t.Errorf("error = %v, want it to include the proxy's output", err)
+	}
+	var removedContainer, removedNetwork bool
+	for _, c := range calls(t, logPath) {
+		removedContainer = removedContainer || strings.HasPrefix(c, "rm -f oc-proxy-")
+		removedNetwork = removedNetwork || strings.HasPrefix(c, "network rm oc-net-")
+	}
+	if !removedContainer || !removedNetwork {
+		t.Errorf("a failed start must remove the container and network, got %q", calls(t, logPath))
+	}
+}
+
+func TestStartProxyNetWaitsForTheProxyToListen(t *testing.T) {
+	logPath := fakeDockerProxy(t, nil, nil)
+	p, err := startProxyNet("oc-proxy:test", "172.17.0.1", nil)
+	if err != nil {
+		t.Fatalf("startProxyNet: %v", err)
+	}
+	defer p.stop()
+	got := calls(t, logPath)
+	if last := got[len(got)-1]; last != "logs "+p.container {
+		t.Errorf("last docker call = %q, want the readiness check `logs %s` after connecting", last, p.container)
 	}
 }
