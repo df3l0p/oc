@@ -1,0 +1,11 @@
+# What every sandbox may reach through its egress proxy, one host:port per
+# line; '#' starts a comment. oc appends the session's llama-server
+# (host.docker.internal:<port>) and mounts the result into the proxy as
+# /etc/oc-proxy/policy.txt. Everything else is blocked.
+
+# npm packages
+registry.npmjs.org:443
+# git over https from GitHub
+github.com:443
+# the model catalog opencode fetches at startup
+models.dev:443

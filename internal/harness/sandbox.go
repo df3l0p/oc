@@ -18,8 +18,11 @@ import (
 )
 
 const (
-	// containerHost is how a container reaches the host's network namespace.
-	// Docker Desktop provides it; on Linux runArgs adds it with --add-host.
+	// containerHost is how the proxy container reaches the host's network
+	// namespace. Docker Desktop provides it; on Linux startProxyNet adds it
+	// with --add-host. The sandbox container itself never resolves it: all
+	// its egress, including to the host's llama-server, goes through the
+	// proxy instead.
 	containerHost = "host.docker.internal"
 	// containerConfigPath is where the generated config is mounted. It's kept
 	// out of the agent's own config directory so docker doesn't create that
@@ -29,8 +32,10 @@ const (
 	containerHome       = "/home/oc"
 )
 
-// Sandbox runs opencode in a Docker container. The container reaches the
-// host's llama-server via host.docker.internal, mounts the working directory,
+// Sandbox runs opencode in a Docker container. The container has no direct
+// route to the host; it reaches the host's llama-server through its
+// per-session egress proxy, which is the one that resolves
+// host.docker.internal. The sandbox container mounts the working directory
 // and uses a generated copy of the host's opencode config with the provider
 // baseURL rewritten to be container-reachable; the host config itself is never
 // modified. It needs docker, not opencode, on the host.
@@ -46,10 +51,19 @@ type Sandbox struct {
 	// generated is the temp file written by Configure and mounted into the
 	// container; removed when Run returns.
 	generated string
-	// hostIP is what containerHost resolves to inside the container: the
-	// bridge gateway IP that llama-server listens on (set by BindHost), or
-	// host-gateway when Docker provides the route itself.
+	// hostIP is what containerHost resolves to inside the proxy container:
+	// the bridge gateway IP that llama-server listens on (set by BindHost),
+	// or host-gateway when Docker provides the route itself.
 	hostIP string
+	// proxyImage is the tag of this session's egress proxy image, set by
+	// Prepare.
+	proxyImage string
+	// modelServer is llama-server's "host:port" as the proxy container reaches
+	// it (host.docker.internal:<port>), set by Configure. It's added to the
+	// proxy's allow-list; it is not the proxy's own address.
+	modelServer string
+	// allNet adds * to the proxy policy (see Options.AllNet).
+	allNet bool
 }
 
 // hostOS is runtime.GOOS, replaceable in tests.
@@ -76,7 +90,7 @@ func newSandbox(opts Options, hostConfig string) *Sandbox {
 	if name == "" {
 		name = images.Default
 	}
-	return &Sandbox{name: name, build: opts.Build, hostConfig: hostConfig, hostIP: "host-gateway"}
+	return &Sandbox{name: name, build: opts.Build, allNet: opts.AllNet, hostConfig: hostConfig, hostIP: "host-gateway"}
 }
 
 // BindHost returns the address llama-server should listen on so the container
@@ -159,6 +173,12 @@ func (s *Sandbox) Prepare() error {
 		return err
 	}
 	s.image = tag
+
+	proxyTag, err := prepareProxyImage(s.build)
+	if err != nil {
+		return fmt.Errorf("preparing proxy image: %w", err)
+	}
+	s.proxyImage = proxyTag
 	return nil
 }
 
@@ -211,6 +231,9 @@ func (s *Sandbox) Configure(providerKey, baseURL string, modelIDs []string) erro
 	if err != nil {
 		return err
 	}
+	if u, err := url.Parse(containerURL); err == nil {
+		s.modelServer = u.Host // already "host.docker.internal:<port>"
+	}
 	out, err := opencodeconfig.Render(s.hostConfig, providerKey, opencodeProvider(containerURL, modelIDs))
 	if err != nil {
 		return err
@@ -234,9 +257,15 @@ func (s *Sandbox) Run(dir, providerKey, modelID string) error {
 		return fmt.Errorf("sandbox: Configure must be called before Run")
 	}
 	defer os.Remove(s.generated)
-	if s.image == "" {
+	if s.image == "" || s.proxyImage == "" {
 		return fmt.Errorf("sandbox: Prepare must be called before Run")
 	}
+
+	pn, err := startProxyNet(s.proxyImage, s.hostIP, s.policy())
+	if err != nil {
+		return fmt.Errorf("starting sandbox proxy: %w", err)
+	}
+	defer pn.stop()
 
 	// Unique per invocation so parallel sessions never collide, whatever port
 	// they share.
@@ -250,15 +279,34 @@ func (s *Sandbox) Run(dir, providerKey, modelID string) error {
 	// daemon noticing; --rm covers the normal path.
 	defer exec.Command("docker", "rm", "-f", name).Run()
 
-	cmd := exec.Command("docker", s.runArgs(name, dir, providerKey, modelID, stdinIsTTY())...)
+	cmd := exec.Command("docker", s.runArgs(name, dir, providerKey, modelID, pn, stdinIsTTY())...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
 }
 
-// runArgs builds the docker argv for one session.
-func (s *Sandbox) runArgs(name, dir, providerKey, modelID string, tty bool) []string {
+// policy is this session's proxy allow-list: the shipped defaults plus
+// llama-server, and with -all-net any public host. Built fresh each
+// call, so sessions never share or change defaultPolicy.
+func (s *Sandbox) policy() []byte {
+	var b bytes.Buffer
+	b.Write(defaultPolicy)
+	if s.modelServer != "" {
+		b.WriteString("\n# this session's llama-server\n" + s.modelServer + "\n")
+	}
+	if s.allNet {
+		b.WriteString("\n# -all-net: any public host\n*\n")
+	}
+	return b.Bytes()
+}
+
+// runArgs builds the docker argv for one session. The sandbox no longer
+// gets a direct host.docker.internal route or unrestricted egress: it only
+// reaches pn's network, and all HTTP(S) traffic is forced through pn's
+// proxy container. Both spellings of the proxy variables are set: curl, for
+// one, ignores uppercase HTTP_PROXY.
+func (s *Sandbox) runArgs(name, dir, providerKey, modelID string, pn *proxyNet, tty bool) []string {
 	flags := "-i"
 	if tty {
 		flags = "-it"
@@ -268,7 +316,15 @@ func (s *Sandbox) runArgs(name, dir, providerKey, modelID string, tty bool) []st
 		// docker fetch one from a registry behind our back.
 		"run", "--rm", "--pull=never", flags,
 		"--name", name,
-		"--add-host", containerHost + ":" + s.hostIP,
+		"--network", pn.network,
+		"-e", "HTTP_PROXY=" + pn.proxyURL(),
+		"-e", "HTTPS_PROXY=" + pn.proxyURL(),
+		"-e", "http_proxy=" + pn.proxyURL(),
+		"-e", "https_proxy=" + pn.proxyURL(),
+		// Loopback inside the sandbox is its own network namespace, not the
+		// host's or the proxy's — never send it through the proxy.
+		"-e", "NO_PROXY=localhost,127.0.0.1,::1",
+		"-e", "no_proxy=localhost,127.0.0.1,::1",
 		"--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
 		"-e", "HOME=" + containerHome,
 		"-e", "OPENCODE_CONFIG=" + containerConfigPath,

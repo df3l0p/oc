@@ -57,6 +57,7 @@ This starts (or reuses) a llama-server serving the default model, merges a
 | `-sandbox`  | off                                               | Run the agent in a Docker container (see below)  |
 | `-image`    | `default`                                         | Bundled sandbox image to use (see below; requires `-sandbox`) |
 | `-build`    | off                                               | Rebuild the sandbox image even if it exists (requires `-sandbox`) |
+| `-all-net`  | off                                               | Let the sandbox reach any public host, not just the default allow-list (requires `-sandbox`; see below) |
 
 Each harness owns its own config path internally (opencode's is its default
 global config, `~/.config/opencode/opencode.jsonc`) — there's no flag for it.
@@ -82,10 +83,12 @@ with an error rather than silently using the wrong model — stop it or use
 ### Sandbox mode
 
 `oc -sandbox` runs the agent inside a Docker container instead of on the
-host. The llama-server still runs on the host; the container reaches it at
-`host.docker.internal`, the current directory is bind-mounted at
-`/workspace`, and the container runs as your uid/gid so files it writes keep
-your ownership. Only `docker` is needed on the host (not opencode).
+host. The llama-server still runs on the host; the sandbox container has no
+direct route to it and instead reaches it through its per-session egress
+proxy, which is what resolves `host.docker.internal`. The current directory
+is bind-mounted at `/workspace`, and the container runs as your uid/gid so
+files it writes keep your ownership. Only `docker` is needed on the host (not
+opencode).
 
 - **Config:** `oc` generates a private copy of your opencode config with the
   `llama-cpp` provider's `baseURL` rewritten for the container and mounts it
@@ -120,17 +123,31 @@ your ownership. Only `docker` is needed on the host (not opencode).
   Desktop (which forward `host.docker.internal` to the host's loopback), and on
   the default Docker bridge's gateway IP (usually `172.17.0.1`) with a native
   Linux engine. That address isn't reachable from your network, and the
-  container is pointed at the same IP. An explicit `-host` is used as is (a
-  wildcard like `0.0.0.0` prints a warning).
+  proxy container (the only one with a route to the host — see Egress below)
+  is pointed at the same IP. An explicit `-host` is used as is (a wildcard
+  like `0.0.0.0` prints a warning).
   - On Linux, an already-running server bound to `127.0.0.1` isn't reachable
-    from the container, so `oc` stops with an error instead of reusing it.
-  - Remaining exposure: the container can reach every host port that is
-    listening on the address above (on macOS and Docker Desktop that means
-    anything on your localhost), not only llama-server's. On Linux, other
-    containers on the default bridge can also reach llama-server, and a host
-    firewall (e.g. `ufw`) may need to allow traffic from the bridge to the
-    host. Routing all sandbox traffic through a proxy container, which would
-    close this, is tracked in [#6](https://github.com/df3l0p/oc/issues/6).
+    from the proxy container, so `oc` stops with an error instead of reusing
+    it.
+- **Egress:** the sandbox container has no direct network access. Instead,
+  each session gets its own proxy container on a private network between the
+  two, and all of the sandbox's HTTP(S) traffic is forced through it via
+  `HTTP_PROXY`/`HTTPS_PROXY`. The proxy only allows the session's model
+  server plus `registry.npmjs.org`, `github.com` and `models.dev` (the
+  latter three over https) and blocks everything else, including non-HTTP
+  protocols such as git over ssh. Those defaults live in
+  `internal/harness/policy.txt` (one `host:port` per line), built into `oc`.
+  `-all-net` opens the sandbox up to any public host over http(s) instead;
+  your machine, your LAN and other private or VPN ranges stay blocked even
+  by IP (the proxy checks the address it actually connects to), apart from
+  llama-server. A blocked host shows up to the agent as a 403 response from
+  `oc-proxy`. The proxy container itself
+  reaches the host over the default Docker bridge, same as llama-server's own listen
+  address above, so on Linux a host firewall (e.g. `ufw`) may still need to
+  allow bridge-to-host traffic, and other containers on that bridge can
+  still reach llama-server directly. The first `-sandbox` run also builds
+  the proxy image (pulling the `golang` and `alpine` base images); both the
+  network and the proxy container are torn down when the session ends.
 - Session data inside the container is discarded on exit (`--rm`).
 
 ## Notes
