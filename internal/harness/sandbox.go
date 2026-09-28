@@ -62,6 +62,8 @@ type Sandbox struct {
 	// it (host.docker.internal:<port>), set by Configure. It's added to the
 	// proxy's allow-list; it is not the proxy's own address.
 	modelServer string
+	// allNet adds * to the proxy policy (see Options.AllNet).
+	allNet bool
 }
 
 // hostOS is runtime.GOOS, replaceable in tests.
@@ -88,7 +90,7 @@ func newSandbox(opts Options, hostConfig string) *Sandbox {
 	if name == "" {
 		name = images.Default
 	}
-	return &Sandbox{name: name, build: opts.Build, hostConfig: hostConfig, hostIP: "host-gateway"}
+	return &Sandbox{name: name, build: opts.Build, allNet: opts.AllNet, hostConfig: hostConfig, hostIP: "host-gateway"}
 }
 
 // BindHost returns the address llama-server should listen on so the container
@@ -285,13 +287,16 @@ func (s *Sandbox) Run(dir, providerKey, modelID string) error {
 }
 
 // policy is this session's proxy allow-list: the shipped defaults plus
-// llama-server. Built fresh each call, so sessions never share or change
-// defaultPolicy.
+// llama-server, and with -all-net any public host. Built fresh each
+// call, so sessions never share or change defaultPolicy.
 func (s *Sandbox) policy() []byte {
 	var b bytes.Buffer
 	b.Write(defaultPolicy)
 	if s.modelServer != "" {
 		b.WriteString("\n# this session's llama-server\n" + s.modelServer + "\n")
+	}
+	if s.allNet {
+		b.WriteString("\n# -all-net: any public host\n*\n")
 	}
 	return b.Bytes()
 }

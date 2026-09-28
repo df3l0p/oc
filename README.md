@@ -57,6 +57,7 @@ This starts (or reuses) a llama-server serving the default model, merges a
 | `-sandbox`  | off                                               | Run the agent in a Docker container (see below)  |
 | `-image`    | `default`                                         | Bundled sandbox image to use (see below; requires `-sandbox`) |
 | `-build`    | off                                               | Rebuild the sandbox image even if it exists (requires `-sandbox`) |
+| `-all-net`  | off                                               | Let the sandbox reach any public host, not just the default allow-list (requires `-sandbox`; see below) |
 
 Each harness owns its own config path internally (opencode's is its default
 global config, `~/.config/opencode/opencode.jsonc`) — there's no flag for it.
@@ -135,9 +136,12 @@ opencode).
   server plus `registry.npmjs.org`, `github.com` and `models.dev` (the
   latter three over https) and blocks everything else, including non-HTTP
   protocols such as git over ssh. Those defaults live in
-  `internal/harness/policy.txt` (one `host:port` per line), built into `oc`;
-  there's no way to extend them at run time yet. A blocked host shows up to
-  the agent as a 403 response from `oc-proxy`. The proxy container itself
+  `internal/harness/policy.txt` (one `host:port` per line), built into `oc`.
+  `-all-net` opens the sandbox up to any public host over http(s) instead;
+  your machine, your LAN and other private or VPN ranges stay blocked even
+  by IP (the proxy checks the address it actually connects to), apart from
+  llama-server. A blocked host shows up to the agent as a 403 response from
+  `oc-proxy`. The proxy container itself
   reaches the host over the default Docker bridge, same as llama-server's own listen
   address above, so on Linux a host firewall (e.g. `ufw`) may still need to
   allow bridge-to-host traffic, and other containers on that bridge can

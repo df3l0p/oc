@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
+	"time"
 )
 
 // forwardTransport is a copy of http.DefaultTransport with proxying
@@ -24,12 +26,19 @@ var forwardTransport = func() *http.Transport {
 	return t
 }()
 
+// defaultHalfCloseIdle is Server.HalfCloseIdle's default.
+const defaultHalfCloseIdle = 30 * time.Second
+
 // Policy decides which upstream destinations may be reached. Entries are
 // exact "host:port" strings, matching what a CONNECT target or a
 // normalized absolute-URI request host already looks like, compared
 // case-insensitively since host names are.
 type Policy struct {
 	Allow map[string]bool
+	// AnyPublic also lets through any destination not in Allow, as long as
+	// the address actually dialed is public (see isPublic): the internet,
+	// but not the host machine or the LAN.
+	AnyPublic bool
 }
 
 // NewPolicy builds a Policy allowing exactly the given "host:port" entries.
@@ -41,15 +50,33 @@ func NewPolicy(hostports []string) Policy {
 	return Policy{Allow: m}
 }
 
-// Allows reports whether hostport may be reached.
-func (p Policy) Allows(hostport string) bool {
+// Explicit reports whether hostport is listed, as opposed to allowed only by
+// AnyPublic.
+func (p Policy) Explicit(hostport string) bool {
 	return p.Allow[strings.ToLower(hostport)]
+}
+
+// Allows reports whether hostport passes the policy. With AnyPublic that's
+// every destination; the public-address check then happens when dialing.
+func (p Policy) Allows(hostport string) bool {
+	return p.AnyPublic || p.Explicit(hostport)
 }
 
 // Server is the sandbox's egress proxy. It implements http.Handler and is
 // meant to be run behind http.ListenAndServe.
 type Server struct {
 	Policy Policy
+	// HalfCloseIdle is how long a CONNECT tunnel stays open with no data
+	// moving once one side has finished, so a peer that never closes its
+	// end can't hold the tunnel forever. Zero means defaultHalfCloseIdle.
+	HalfCloseIdle time.Duration
+}
+
+func (s *Server) halfCloseIdle() time.Duration {
+	if s.HalfCloseIdle > 0 {
+		return s.HalfCloseIdle
+	}
+	return defaultHalfCloseIdle
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -65,13 +92,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	target := r.Host
 	if !s.Policy.Allows(target) {
-		log.Printf("oc-proxy: denied %s", target)
-		http.Error(w, "oc-proxy: host not allowed: "+target, http.StatusForbidden)
+		denied(w, target)
 		return
 	}
-	upstream, err := net.Dial("tcp", target)
+	upstream, err := s.dialerFor(target).DialContext(r.Context(), "tcp", target)
 	if err != nil {
-		http.Error(w, "oc-proxy: dial upstream: "+err.Error(), http.StatusBadGateway)
+		dialFailed(w, target, err)
 		return
 	}
 	defer upstream.Close()
@@ -108,12 +134,45 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	// When one side stops sending, pass that on as a half-close and keep the
 	// other direction open: a client that shuts down its write side after its
-	// request still gets the whole response.
+	// request still gets the whole response. From then on the remaining
+	// direction must keep data moving, or it's closed after
+	// s.halfCloseIdle().
+	idle := s.halfCloseIdle()
+	var finishing atomic.Bool
 	done := make(chan struct{}, 2)
-	go func() { io.Copy(upstream, client); closeWrite(upstream); done <- struct{}{} }()
-	go func() { io.Copy(client, upstream); closeWrite(client); done <- struct{}{} }()
+	go func() {
+		io.Copy(upstream, idleReader{client, idle, &finishing})
+		closeWrite(upstream)
+		done <- struct{}{}
+	}()
+	go func() {
+		io.Copy(client, idleReader{upstream, idle, &finishing})
+		closeWrite(client)
+		done <- struct{}{}
+	}()
 	<-done
+	finishing.Store(true)
+	// The remaining copy may already be blocked in a read with no deadline.
+	deadline := time.Now().Add(idle)
+	client.SetReadDeadline(deadline)
+	upstream.SetReadDeadline(deadline)
 	<-done
+}
+
+// idleReader reads from c, and once *finishing is set pushes c's read
+// deadline idle ahead on every read: the tunnel closes when nothing moves
+// for that long, not after a fixed total.
+type idleReader struct {
+	c         net.Conn
+	idle      time.Duration
+	finishing *atomic.Bool
+}
+
+func (r idleReader) Read(p []byte) (int, error) {
+	if r.finishing.Load() {
+		r.c.SetReadDeadline(time.Now().Add(r.idle))
+	}
+	return r.c.Read(p)
 }
 
 // closeWrite half-closes c if it supports that (TCP does), and fully closes
@@ -124,6 +183,12 @@ func closeWrite(c net.Conn) {
 		return
 	}
 	c.Close()
+}
+
+// denied logs and refuses a destination the policy doesn't allow.
+func denied(w http.ResponseWriter, target string) {
+	log.Printf("oc-proxy: denied %s", target)
+	http.Error(w, "oc-proxy: host not allowed: "+target, http.StatusForbidden)
 }
 
 // hostport normalizes u's authority to an explicit "host:port", defaulting
@@ -166,17 +231,16 @@ func (s *Server) handleForward(w http.ResponseWriter, r *http.Request) {
 	}
 	target := hostport(r.URL)
 	if !s.Policy.Allows(target) {
-		log.Printf("oc-proxy: denied %s", target)
-		http.Error(w, "oc-proxy: host not allowed: "+target, http.StatusForbidden)
+		denied(w, target)
 		return
 	}
 	out := r.Clone(r.Context())
 	out.RequestURI = "" // must be empty on a client request
 	removeHopByHop(out.Header)
 
-	resp, err := forwardTransport.RoundTrip(out)
+	resp, err := s.transportFor(target).RoundTrip(out)
 	if err != nil {
-		http.Error(w, "oc-proxy: forward: "+err.Error(), http.StatusBadGateway)
+		dialFailed(w, target, err)
 		return
 	}
 	defer resp.Body.Close()

@@ -397,3 +397,88 @@ func TestPolicyMatchesHostsCaseInsensitively(t *testing.T) {
 		t.Error("case folding must not loosen the port match")
 	}
 }
+
+// connectThroughProxy opens a CONNECT tunnel to target through a proxy
+// allowing it, with a short half-close idle timeout, returning the client
+// end and its reader.
+func connectThroughProxy(t *testing.T, target string) (net.Conn, *bufio.Reader) {
+	t.Helper()
+	px := httptest.NewServer(&Server{Policy: NewPolicy([]string{target}), HalfCloseIdle: 100 * time.Millisecond})
+	t.Cleanup(px.Close)
+	conn, err := net.Dial("tcp", mustParseURL(t, px.URL).Host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target)
+	br := bufio.NewReader(conn)
+	if status := readConnectStatusLine(t, br); !strings.Contains(status, "200") {
+		t.Fatalf("CONNECT status line = %q, want 200", status)
+	}
+	return conn, br
+}
+
+// Once the client has finished, an upstream that goes quiet without ever
+// closing must not hold the tunnel open forever.
+func TestHandleConnectClosesAnIdleTunnelAfterTheClientFinishes(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	release := make(chan struct{})
+	defer close(release)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		io.Copy(io.Discard, conn) // sees the client's half-close...
+		<-release                 // ...then never answers or closes
+	}()
+
+	conn, br := connectThroughProxy(t, ln.Addr().String())
+	conn.SetDeadline(time.Now().Add(2 * time.Second))
+	if err := conn.(*net.TCPConn).CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadAll(br); err != nil {
+		t.Fatalf("tunnel wasn't closed after going idle: %v", err)
+	}
+}
+
+// The idle timeout only fires when nothing moves: a response still
+// streaming after the client's half-close runs to completion, however long.
+func TestHandleConnectKeepsAnActiveTunnelPastTheIdleTimeout(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		io.Copy(io.Discard, conn)
+		for _, chunk := range []string{"a", "b", "c", "d"} {
+			time.Sleep(60 * time.Millisecond) // 240ms in total, each gap under the timeout
+			conn.Write([]byte(chunk))
+		}
+	}()
+
+	conn, br := connectThroughProxy(t, ln.Addr().String())
+	conn.SetDeadline(time.Now().Add(2 * time.Second))
+	if err := conn.(*net.TCPConn).CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(br)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "abcd" {
+		t.Errorf("response after half-close = %q, want %q", got, "abcd")
+	}
+}

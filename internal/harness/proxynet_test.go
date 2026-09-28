@@ -241,3 +241,23 @@ func TestStartProxyNetWaitsForTheProxyToListen(t *testing.T) {
 		t.Errorf("last docker call = %q, want the readiness check `logs %s` after connecting", last, p.container)
 	}
 }
+
+func TestSandboxPolicyWithAllNetAllowsAnyPublicHost(t *testing.T) {
+	s := newSandbox(Options{Sandbox: true, AllNet: true}, "")
+	s.modelServer = "host.docker.internal:8080"
+	pol, err := proxy.ParsePolicy(bytes.NewReader(s.policy()))
+	if err != nil {
+		t.Fatalf("ParsePolicy(s.policy()): %v", err)
+	}
+	if !pol.AnyPublic {
+		t.Error("-all-net must allow any public host")
+	}
+	if !pol.Explicit("host.docker.internal:8080") {
+		t.Error("llama-server must stay listed explicitly: it's on the host, which * doesn't reach")
+	}
+
+	plain := newSandbox(Options{Sandbox: true}, "")
+	if pol, _ := proxy.ParsePolicy(bytes.NewReader(plain.policy())); pol.AnyPublic {
+		t.Error("without -all-net the policy must not contain *")
+	}
+}

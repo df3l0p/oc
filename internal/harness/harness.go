@@ -51,6 +51,10 @@ type Options struct {
 	// even if it already exists locally. A missing image is always built, never
 	// pulled.
 	Build bool
+	// AllNet lets the sandbox reach any public host through its egress
+	// proxy, not just the default allow-list. The host machine and the LAN
+	// stay out of reach apart from llama-server.
+	AllNet bool
 }
 
 // registry maps a harness name, as accepted by oc's --harness flag, to a

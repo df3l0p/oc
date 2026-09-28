@@ -10,17 +10,23 @@ import (
 	"strings"
 )
 
-// ParsePolicy reads a Policy in its text form: one "host:port" per line;
-// blank lines and everything after a '#' are ignored. A malformed line is an
+// ParsePolicy reads a Policy in its text form: one "host:port" per line, or
+// a lone "*" to also allow any public host (Policy.AnyPublic); blank lines
+// and everything after a '#' are ignored. A malformed line is an
 // error — callers must never fall back to allow-all, or to a policy that
 // differs from what was written.
 func ParsePolicy(r io.Reader) (Policy, error) {
 	var hostports []string
+	anyPublic := false
 	sc := bufio.NewScanner(r)
 	for n := 1; sc.Scan(); n++ {
 		line, _, _ := strings.Cut(sc.Text(), "#")
 		line = strings.TrimSpace(line)
 		if line == "" {
+			continue
+		}
+		if line == "*" {
+			anyPublic = true
 			continue
 		}
 		host, port, err := net.SplitHostPort(line)
@@ -35,7 +41,9 @@ func ParsePolicy(r io.Reader) (Policy, error) {
 	if err := sc.Err(); err != nil {
 		return Policy{}, err
 	}
-	return NewPolicy(hostports), nil
+	pol := NewPolicy(hostports)
+	pol.AnyPublic = anyPublic
+	return pol, nil
 }
 
 // LoadPolicy reads a Policy from a file in ParsePolicy's format. A missing

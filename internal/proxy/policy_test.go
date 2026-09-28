@@ -69,3 +69,19 @@ func TestParsePolicyRejectsMalformedLines(t *testing.T) {
 		}
 	}
 }
+
+func TestParsePolicyStarAllowsAnyPublicHost(t *testing.T) {
+	pol, err := ParsePolicy(strings.NewReader("host.docker.internal:8080\n*  # any public host\n"))
+	if err != nil {
+		t.Fatalf("ParsePolicy: %v", err)
+	}
+	if !pol.AnyPublic {
+		t.Error("a * line must set AnyPublic")
+	}
+	if !pol.Allows("example.com:443") || !pol.Allows("example.com:22") {
+		t.Error("with *, any host:port passes the policy (the public-address check happens at dial time)")
+	}
+	if !pol.Explicit("host.docker.internal:8080") || pol.Explicit("example.com:443") {
+		t.Error("Explicit must report only listed entries, not ones allowed by *")
+	}
+}
