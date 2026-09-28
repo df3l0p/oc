@@ -312,3 +312,88 @@ func TestHandleConnectBlocksUnconfiguredHost(t *testing.T) {
 		t.Errorf("CONNECT status line = %q, want 403", status)
 	}
 }
+
+// Only plain http:// may use the forward path: an https:// URL sent there
+// would be policy-checked against port 80 (hostport's default) while the
+// transport dials 443. https must go through CONNECT instead.
+func TestHandleForwardRefusesNonHTTPSchemes(t *testing.T) {
+	srv := &Server{Policy: NewPolicy([]string{"example.invalid:80", "example.invalid:443"})}
+	px := httptest.NewServer(srv)
+	defer px.Close()
+
+	conn, err := net.Dial("tcp", mustParseURL(t, px.URL).Host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(2 * time.Second))
+	fmt.Fprint(conn, "GET https://example.invalid/ HTTP/1.1\r\nHost: example.invalid\r\n\r\n")
+	status, err := bufio.NewReader(conn).ReadString('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(status, "400") {
+		t.Errorf("status line = %q, want 400", status)
+	}
+}
+
+// A client that half-closes (shutdown(SHUT_WR)) after sending must still get
+// the whole response: the tunnel may only close a side once both directions
+// are done.
+func TestHandleConnectKeepsTheResponseAfterAClientHalfClose(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		io.Copy(io.Discard, conn) // until the client's half-close arrives
+		conn.Write([]byte("pong"))
+	}()
+
+	srv := &Server{Policy: NewPolicy([]string{ln.Addr().String()})}
+	px := httptest.NewServer(srv)
+	defer px.Close()
+
+	conn, err := net.Dial("tcp", mustParseURL(t, px.URL).Host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(2 * time.Second))
+	fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", ln.Addr().String(), ln.Addr().String())
+	br := bufio.NewReader(conn)
+	if status := readConnectStatusLine(t, br); !strings.Contains(status, "200") {
+		t.Fatalf("CONNECT status line = %q, want 200", status)
+	}
+
+	if _, err := conn.Write([]byte("ping")); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.(*net.TCPConn).CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(br)
+	if err != nil {
+		t.Fatalf("reading the response after half-close: %v", err)
+	}
+	if string(got) != "pong" {
+		t.Errorf("response after half-close = %q, want %q", got, "pong")
+	}
+}
+
+// Host names are case-insensitive, so the allow-list must be too.
+func TestPolicyMatchesHostsCaseInsensitively(t *testing.T) {
+	pol := NewPolicy([]string{"GitHub.com:443"})
+	if !pol.Allows("github.COM:443") {
+		t.Error("an allowed host must match regardless of case")
+	}
+	if pol.Allows("github.com:80") {
+		t.Error("case folding must not loosen the port match")
+	}
+}

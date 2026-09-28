@@ -26,7 +26,8 @@ var forwardTransport = func() *http.Transport {
 
 // Policy decides which upstream destinations may be reached. Entries are
 // exact "host:port" strings, matching what a CONNECT target or a
-// normalized absolute-URI request host already looks like.
+// normalized absolute-URI request host already looks like, compared
+// case-insensitively since host names are.
 type Policy struct {
 	Allow map[string]bool
 }
@@ -35,14 +36,14 @@ type Policy struct {
 func NewPolicy(hostports []string) Policy {
 	m := make(map[string]bool, len(hostports))
 	for _, h := range hostports {
-		m[h] = true
+		m[strings.ToLower(h)] = true
 	}
 	return Policy{Allow: m}
 }
 
 // Allows reports whether hostport may be reached.
 func (p Policy) Allows(hostport string) bool {
-	return p.Allow[hostport]
+	return p.Allow[strings.ToLower(hostport)]
 }
 
 // Server is the sandbox's egress proxy. It implements http.Handler and is
@@ -105,10 +106,24 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// When one side stops sending, pass that on as a half-close and keep the
+	// other direction open: a client that shuts down its write side after its
+	// request still gets the whole response.
 	done := make(chan struct{}, 2)
-	go func() { io.Copy(upstream, client); done <- struct{}{} }()
-	go func() { io.Copy(client, upstream); done <- struct{}{} }()
+	go func() { io.Copy(upstream, client); closeWrite(upstream); done <- struct{}{} }()
+	go func() { io.Copy(client, upstream); closeWrite(client); done <- struct{}{} }()
 	<-done
+	<-done
+}
+
+// closeWrite half-closes c if it supports that (TCP does), and fully closes
+// it otherwise, so the peer always sees the end of the stream.
+func closeWrite(c net.Conn) {
+	if cw, ok := c.(interface{ CloseWrite() error }); ok {
+		cw.CloseWrite()
+		return
+	}
+	c.Close()
 }
 
 // hostport normalizes u's authority to an explicit "host:port", defaulting
@@ -141,7 +156,14 @@ func removeHopByHop(h http.Header) {
 // handleForward proxies a plain (non-CONNECT) absolute-URI request to an
 // allowed host. The response is flushed to the client chunk by chunk, so
 // streamed responses (llama-server's SSE completions) aren't held back.
+// Only http:// is forwarded: https goes through CONNECT, and letting it in
+// here would check the policy against hostport's port-80 default while the
+// transport dials 443.
 func (s *Server) handleForward(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Scheme != "http" {
+		http.Error(w, "oc-proxy: only http:// URLs are forwarded; use CONNECT for https", http.StatusBadRequest)
+		return
+	}
 	target := hostport(r.URL)
 	if !s.Policy.Allows(target) {
 		log.Printf("oc-proxy: denied %s", target)
