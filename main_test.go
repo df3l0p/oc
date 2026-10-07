@@ -8,12 +8,12 @@ import (
 )
 
 func TestValidateRejectsSandboxOnlyFlagsWithoutSandbox(t *testing.T) {
-	for _, cfg := range []cliConfig{{image: "x"}, {build: true}, {allNet: true}} {
+	for _, cfg := range []cliConfig{{image: "x"}, {build: true}, {allNet: true}, {noInspect: true}} {
 		if err := cfg.validate(); err == nil {
 			t.Errorf("validate(%+v) = nil, want an error", cfg)
 		}
 	}
-	for _, cfg := range []cliConfig{{}, {sandbox: true}, {sandbox: true, image: "x", build: true, allNet: true}} {
+	for _, cfg := range []cliConfig{{}, {sandbox: true}, {sandbox: true, image: "x", build: true, allNet: true, noInspect: true}} {
 		if err := cfg.validate(); err != nil {
 			t.Errorf("validate(%+v) = %v, want nil", cfg, err)
 		}

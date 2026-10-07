@@ -35,14 +35,16 @@ type cliConfig struct {
 	// allNet lets the sandbox reach any public host, not just the
 	// default allow-list.
 	allNet bool
+	// noInspect turns off TLS interception in the sandbox's proxy.
+	noInspect bool
 }
 
 const defaultHost = "127.0.0.1"
 
 // validate rejects flag combinations that only make sense with -sandbox.
 func (c cliConfig) validate() error {
-	if !c.sandbox && (c.image != "" || c.build || c.allNet) {
-		return fmt.Errorf("-image, -build and -all-net require -sandbox")
+	if !c.sandbox && (c.image != "" || c.build || c.allNet || c.noInspect) {
+		return fmt.Errorf("-image, -build, -all-net and -no-inspect require -sandbox")
 	}
 	return nil
 }
@@ -75,6 +77,7 @@ func parseFlags() (cliConfig, error) {
 	flag.StringVar(&cfg.image, "image", "", "bundled sandbox image to use (default "+images.Default+"; available: "+strings.Join(images.Names(), ", ")+"); requires -sandbox")
 	flag.BoolVar(&cfg.build, "build", false, "rebuild the sandbox image from scratch, without docker's layer cache, even if it exists (it is built when missing, never pulled); requires -sandbox")
 	flag.BoolVar(&cfg.allNet, "all-net", false, "let the sandbox reach any public host over http(s), not just the default allow-list (your machine and LAN stay blocked apart from llama-server); requires -sandbox")
+	flag.BoolVar(&cfg.noInspect, "no-inspect", false, "don't terminate TLS in the sandbox's proxy: tunnel every HTTPS connection unread (by default the proxy decrypts the allow-listed hosts with a CA made for the session, and logs each request); requires -sandbox")
 	flag.Parse()
 	flag.Visit(func(f *flag.Flag) {
 		if f.Name == "host" {
@@ -97,7 +100,7 @@ func run() error {
 		return err
 	}
 
-	h, err := harness.New(cfg.harness, harness.Options{Sandbox: cfg.sandbox, Image: cfg.image, Build: cfg.build, AllNet: cfg.allNet})
+	h, err := harness.New(cfg.harness, harness.Options{Sandbox: cfg.sandbox, Image: cfg.image, Build: cfg.build, AllNet: cfg.allNet, NoInspect: cfg.noInspect})
 	if err != nil {
 		return err
 	}

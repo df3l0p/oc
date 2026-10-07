@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -44,6 +45,24 @@ func ParsePolicy(r io.Reader) (Policy, error) {
 	pol := NewPolicy(hostports)
 	pol.AnyPublic = anyPublic
 	return pol, nil
+}
+
+// DNSHosts lists, sorted and without duplicates, the host names in the policy's
+// explicit entries, ignoring ports and IP literals. These are the hosts an
+// interception CA can be constrained to.
+func (p Policy) DNSHosts() []string {
+	seen := map[string]bool{}
+	var hosts []string
+	for hp := range p.Allow {
+		host, _, err := net.SplitHostPort(hp)
+		if err != nil || net.ParseIP(host) != nil || seen[host] {
+			continue
+		}
+		seen[host] = true
+		hosts = append(hosts, host)
+	}
+	sort.Strings(hosts)
+	return hosts
 }
 
 // LoadPolicy reads a Policy from a file in ParsePolicy's format. A missing

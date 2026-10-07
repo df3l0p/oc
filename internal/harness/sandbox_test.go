@@ -358,3 +358,52 @@ func TestSandboxAvailableReportsUnreachableDaemon(t *testing.T) {
 		t.Errorf("expected a daemon error, got %v", err)
 	}
 }
+
+func TestSandboxInspectsByDefaultAndNotWithNoInspect(t *testing.T) {
+	if !newSandbox(Options{Sandbox: true}, "").inspect {
+		t.Error("a sandbox must inspect TLS by default")
+	}
+	if newSandbox(Options{Sandbox: true, NoInspect: true}, "").inspect {
+		t.Error("NoInspect must turn inspection off")
+	}
+}
+
+func TestSandboxRunArgsTrustTheSessionCA(t *testing.T) {
+	s := newSandbox(Options{Sandbox: true}, "")
+	s.image = "oc-sandbox-default:abc123"
+	s.generated = "/tmp/gen.jsonc"
+	pn := &proxyNet{network: "oc-net-1-aa", container: "oc-proxy-1-aa", caVolume: "oc-ca-1-aa"}
+
+	joined := strings.Join(s.runArgs("oc-1-aa", "/work/proj", "llama-cpp", "m1", pn, false), " ")
+	for _, want := range []string{
+		// Not under /etc/oc, where the generated config is bind-mounted.
+		"-v oc-ca-1-aa:/etc/oc-ca:ro",
+		"-e NODE_EXTRA_CA_CERTS=/etc/oc-ca/ca.pem",
+		"-e SSL_CERT_FILE=/etc/oc-ca/ca.pem",
+		"-e GIT_SSL_CAINFO=/etc/oc-ca/ca.pem",
+		"-e CURL_CA_BUNDLE=/etc/oc-ca/ca.pem",
+		"-e REQUESTS_CA_BUNDLE=/etc/oc-ca/ca.pem",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("args missing %q:\n%s", want, joined)
+		}
+	}
+	// The mounts must come before the image: after it they'd be the agent's args.
+	if strings.Index(joined, "oc-ca-1-aa:/etc/oc-ca:ro") > strings.Index(joined, "oc-sandbox-default:abc123") {
+		t.Errorf("the CA mount must precede the image: %s", joined)
+	}
+}
+
+func TestSandboxRunArgsWithoutAProxyCAMountNothing(t *testing.T) {
+	s := newSandbox(Options{Sandbox: true, NoInspect: true}, "")
+	s.image = "oc-sandbox-default:abc123"
+	s.generated = "/tmp/gen.jsonc"
+	pn := &proxyNet{network: "oc-net-1-aa", container: "oc-proxy-1-aa"}
+
+	joined := strings.Join(s.runArgs("oc-1-aa", "/work/proj", "llama-cpp", "m1", pn, false), " ")
+	for _, bad := range []string{"oc-ca", "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "GIT_SSL_CAINFO", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE"} {
+		if strings.Contains(joined, bad) {
+			t.Errorf("without inspection, args must not mention %q: %s", bad, joined)
+		}
+	}
+}

@@ -1,15 +1,18 @@
 // Package proxy implements the sandbox's egress forward proxy: a host
-// allow/blocklist first, with TLS interception and credential injection
-// layered on top in later phases.
+// allow/blocklist first, with TLS interception (see CA and handleIntercept)
+// for the hosts the policy lists explicitly, and credential injection to be
+// layered on top in a later phase.
 package proxy
 
 import (
+	"crypto/tls"
 	"io"
 	"log"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -66,10 +69,29 @@ func (p Policy) Allows(hostport string) bool {
 // meant to be run behind http.ListenAndServe.
 type Server struct {
 	Policy Policy
+	// CA, when set, makes the proxy terminate TLS for CONNECT targets the
+	// policy lists explicitly and the CA covers, instead of tunnelling them
+	// blind. Everything else (hosts allowed only by AnyPublic included) is
+	// still tunnelled. See handleIntercept.
+	CA *CA
+	// OnRequest, when set, is called for every intercepted request before it is
+	// forwarded, with the CONNECT target ("host:port"). It may change the
+	// request; a non-nil error refuses it with a 403. It is where credential
+	// injection or request rules would plug in.
+	OnRequest func(r *http.Request, target string) error
+	// Logf receives an audit line per intercepted request. Nil means the
+	// standard logger.
+	Logf func(format string, args ...any)
+	// UpstreamTLS configures how intercepted requests verify the real server;
+	// nil means the system roots. Tests use it to trust a test server.
+	UpstreamTLS *tls.Config
 	// HalfCloseIdle is how long a CONNECT tunnel stays open with no data
 	// moving once one side has finished, so a peer that never closes its
 	// end can't hold the tunnel forever. Zero means defaultHalfCloseIdle.
 	HalfCloseIdle time.Duration
+
+	// upstreams caches the transport per intercepted target (see upstream).
+	upstreams sync.Map
 }
 
 func (s *Server) halfCloseIdle() time.Duration {
@@ -87,12 +109,17 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.handleForward(w, r)
 }
 
-// handleConnect blind-tunnels an allowed CONNECT target: bytes are relayed
-// unmodified in both directions, never inspected.
+// handleConnect handles an allowed CONNECT target: terminated and inspected
+// when the CA covers it (see handleIntercept), otherwise blind-tunnelled, with
+// bytes relayed unmodified in both directions and never inspected.
 func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	target := r.Host
 	if !s.Policy.Allows(target) {
 		denied(w, target)
+		return
+	}
+	if s.interceptable(target) {
+		s.handleIntercept(w, r, target)
 		return
 	}
 	upstream, err := s.dialerFor(target).DialContext(r.Context(), "tcp", target)
@@ -244,6 +271,12 @@ func (s *Server) handleForward(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
+	relay(w, resp)
+}
+
+// relay writes resp to w, flushing chunk by chunk so streamed responses
+// (llama-server's SSE completions) aren't held back.
+func relay(w http.ResponseWriter, resp *http.Response) {
 	removeHopByHop(resp.Header)
 	for k, vv := range resp.Header {
 		for _, v := range vv {
