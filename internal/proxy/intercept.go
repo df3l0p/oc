@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -134,6 +135,11 @@ func (s *Server) serveIntercepted(w http.ResponseWriter, r *http.Request, target
 	}
 	if s.OnRequest != nil {
 		if err := s.OnRequest(r, target); err != nil {
+			var ce *CredentialError
+			if errors.As(err, &ce) {
+				http.Error(w, "oc-proxy: "+ce.Error(), http.StatusBadGateway)
+				return http.StatusBadGateway, err
+			}
 			http.Error(w, "oc-proxy: request refused: "+err.Error(), http.StatusForbidden)
 			return http.StatusForbidden, nil
 		}
