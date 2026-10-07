@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
 	"log"
@@ -20,7 +21,11 @@ func main() {
 	intercept := flag.Bool("intercept", false, "terminate TLS for the hosts the policy lists explicitly, with a CA created for this run, and log each request")
 	caOut := flag.String("ca-out", "/ca/ca.pem", "with -intercept: where to write the trust bundle (the system roots plus the session CA's certificate; the CA's key is never written)")
 	systemRoots := flag.String("system-roots", "/etc/ssl/certs/ca-certificates.crt", "with -intercept: the system trust roots to include in the bundle")
+	providersStdin := flag.Bool("providers-stdin", false, "with -intercept: read one line of provider config (credentials to inject) from stdin before listening")
 	flag.Parse()
+	if *providersStdin && !*intercept {
+		log.Fatal("oc-proxy: -providers-stdin needs -intercept: credentials can only be injected into decrypted requests")
+	}
 
 	pol, err := proxy.LoadPolicy(*policyPath)
 	if err != nil {
@@ -43,6 +48,21 @@ func main() {
 		}
 		fmt.Printf("oc-proxy: intercepting %v; trust bundle written to %s\n", pol.DNSHosts(), *caOut)
 		srv.CA = ca
+		if *providersStdin {
+			providers, err := proxy.ReadProviders(bufio.NewReader(os.Stdin))
+			if err != nil {
+				log.Fatalf("oc-proxy: %v", err)
+			}
+			for _, p := range providers {
+				for _, h := range p.Hosts() {
+					if !pol.Explicit(h) {
+						log.Fatalf("oc-proxy: provider %s is bound to %s, which the policy doesn't list explicitly, so it would never be decrypted", p.Name(), h)
+					}
+				}
+				fmt.Printf("oc-proxy: provider %s will be injected at %v\n", p.Name(), p.Hosts())
+			}
+			srv.OnRequest = (&proxy.Injector{Providers: providers, Logf: log.Printf}).OnRequest
+		}
 	}
 
 	ln, err := net.Listen("tcp", *addr)

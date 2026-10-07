@@ -285,3 +285,25 @@ func TestInterceptNeverForwardsAPlaceholderInTheQuery(t *testing.T) {
 		t.Errorf("status = %d, upstream hits = %d; want 403 and 0", status, hits.Load())
 	}
 }
+
+// Several providers side by side: each swaps only its own placeholder, at its
+// own hosts.
+func TestInjectorHandlesSeveralProvidersIndependently(t *testing.T) {
+	a, _ := NewStaticProvider("a", []string{"a.example:443"}, "secret-a", "oc_placeholder_a")
+	b, _ := NewStaticProvider("b", []string{"b.example:443"}, "secret-b", "oc_placeholder_b")
+	in := &Injector{Providers: []Provider{a, b}}
+
+	ra := newReq("https://a.example/x", "Bearer oc_placeholder_a")
+	if err := in.OnRequest(ra, "a.example:443"); err != nil || ra.Header.Get("Authorization") != "Bearer secret-a" {
+		t.Errorf("a: err=%v Authorization=%q", err, ra.Header.Get("Authorization"))
+	}
+	rb := newReq("https://b.example/x", "Bearer oc_placeholder_b")
+	if err := in.OnRequest(rb, "b.example:443"); err != nil || rb.Header.Get("Authorization") != "Bearer secret-b" {
+		t.Errorf("b: err=%v Authorization=%q", err, rb.Header.Get("Authorization"))
+	}
+	// a's placeholder at b's host is refused: it is only valid at a's.
+	cross := newReq("https://b.example/x", "Bearer oc_placeholder_a")
+	if err := in.OnRequest(cross, "b.example:443"); err == nil {
+		t.Error("a's placeholder was accepted at b's host")
+	}
+}
