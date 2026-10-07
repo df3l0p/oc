@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakeDocker puts a `docker` shell script on PATH that appends each
@@ -46,12 +47,26 @@ func fakeDockerOutput(t *testing.T, exitFor map[string]int, stdoutFor map[string
 		}
 		fmt.Fprintf(&cases, "  \"%s\"*) %sexit %d ;;\n", prefix, out, exitFor[prefix])
 	}
-	script := fmt.Sprintf("#!/bin/sh\necho \"$*\" >> %q\ncase \"$*\" in\n%s  *) exit 0 ;;\nesac\n", logPath, cases.String())
+	script := fmt.Sprintf("#!/bin/sh\necho \"$*\" >> %q\n[ \"$1\" = attach ] && cat >> %q\ncase \"$*\" in\n%s  *) exit 0 ;;\nesac\n", logPath, logPath+".stdin", cases.String())
 	if err := os.WriteFile(filepath.Join(dir, "docker"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	return logPath
+}
+
+// attachedStdin is what the fake docker received on `docker attach`'s stdin.
+// The attach runs in the background, so it polls briefly.
+func attachedStdin(t *testing.T, logPath string) string {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		b, _ := os.ReadFile(logPath + ".stdin")
+		if len(b) > 0 || time.Now().After(deadline) {
+			return string(b)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func calls(t *testing.T, logPath string) []string {

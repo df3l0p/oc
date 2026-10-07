@@ -276,7 +276,7 @@ func (s *Sandbox) Run(dir, providerKey, modelID string) error {
 		return fmt.Errorf("sandbox: Prepare must be called before Run")
 	}
 
-	pn, err := startProxyNet(s.proxyImage, s.hostIP, s.policy(), s.inspect)
+	pn, err := startProxyNet(s.proxyImage, s.hostIP, s.policy(), s.inspect, nil)
 	if err != nil {
 		return fmt.Errorf("starting sandbox proxy: %w", err)
 	}
