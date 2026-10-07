@@ -179,9 +179,29 @@ func TestDefaultPolicyParses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("policy.txt: %v", err)
 	}
-	for _, want := range []string{"registry.npmjs.org:443", "github.com:443", "models.dev:443"} {
+	for _, want := range []string{
+		"registry.npmjs.org:443", "github.com:443", "models.dev:443",
+		"api.github.com:443", "codeload.github.com:443",
+		"raw.githubusercontent.com:443", "objects.githubusercontent.com:443",
+	} {
 		if !pol.Allows(want) {
 			t.Errorf("default policy doesn't allow %s", want)
+		}
+	}
+}
+
+func TestDefaultPolicyListsTheGitHubProviderHostsExplicitly(t *testing.T) {
+	pol, err := proxy.ParsePolicy(bytes.NewReader(defaultPolicy))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := proxy.NewGitHubProvider("github_pat_x", "oc_placeholder_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range p.Hosts() {
+		if !pol.Explicit(h) {
+			t.Errorf("%s is bound to the GitHub provider but isn't an explicit policy entry, so it would never be decrypted", h)
 		}
 	}
 }
