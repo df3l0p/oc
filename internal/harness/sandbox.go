@@ -30,7 +30,19 @@ const (
 	containerConfigPath = "/etc/oc/opencode.jsonc"
 	containerWorkdir    = "/workspace"
 	containerHome       = "/home/oc"
+	// containerCADir is where the session's CA volume is mounted: not under
+	// /etc/oc, where the config above is bind-mounted as a single file.
+	containerCADir = "/etc/oc-ca"
+	// containerCAPath is the trust bundle in it (the system roots plus the
+	// session CA), named by oc-proxy's -ca-out default.
+	containerCAPath = containerCADir + "/ca.pem"
 )
+
+// caTrustEnv is the environment that makes the agent's tools trust
+// containerCAPath: Node (and so opencode), OpenSSL-based clients, git, curl
+// and Python's requests. Several of these replace the system roots instead of
+// adding to them, which is why the bundle carries the system roots too.
+var caTrustEnv = []string{"NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "GIT_SSL_CAINFO", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE"}
 
 // Sandbox runs opencode in a Docker container. The container has no direct
 // route to the host; it reaches the host's llama-server through its
@@ -64,6 +76,9 @@ type Sandbox struct {
 	modelServer string
 	// allNet adds * to the proxy policy (see Options.AllNet).
 	allNet bool
+	// inspect has the proxy terminate TLS for the policy's explicit hosts
+	// (see Options.NoInspect).
+	inspect bool
 }
 
 // hostOS is runtime.GOOS, replaceable in tests.
@@ -90,7 +105,7 @@ func newSandbox(opts Options, hostConfig string) *Sandbox {
 	if name == "" {
 		name = images.Default
 	}
-	return &Sandbox{name: name, build: opts.Build, allNet: opts.AllNet, hostConfig: hostConfig, hostIP: "host-gateway"}
+	return &Sandbox{name: name, build: opts.Build, allNet: opts.AllNet, inspect: !opts.NoInspect, hostConfig: hostConfig, hostIP: "host-gateway"}
 }
 
 // BindHost returns the address llama-server should listen on so the container
@@ -261,11 +276,15 @@ func (s *Sandbox) Run(dir, providerKey, modelID string) error {
 		return fmt.Errorf("sandbox: Prepare must be called before Run")
 	}
 
-	pn, err := startProxyNet(s.proxyImage, s.hostIP, s.policy())
+	pn, err := startProxyNet(s.proxyImage, s.hostIP, s.policy(), s.inspect)
 	if err != nil {
 		return fmt.Errorf("starting sandbox proxy: %w", err)
 	}
 	defer pn.stop()
+	if pn.logFile != "" {
+		// To stderr, before opencode takes the terminal over.
+		fmt.Fprintf(os.Stderr, "oc: sandbox proxy log: %s\n", pn.logFile)
+	}
 
 	// Unique per invocation so parallel sessions never collide, whatever port
 	// they share.
@@ -311,7 +330,7 @@ func (s *Sandbox) runArgs(name, dir, providerKey, modelID string, pn *proxyNet, 
 	if tty {
 		flags = "-it"
 	}
-	return []string{
+	args := []string{
 		// --pull=never: Prepare already ensured the image locally; never let
 		// docker fetch one from a registry behind our back.
 		"run", "--rm", "--pull=never", flags,
@@ -330,11 +349,22 @@ func (s *Sandbox) runArgs(name, dir, providerKey, modelID string, pn *proxyNet, 
 		"-e", "OPENCODE_CONFIG=" + containerConfigPath,
 		"-v", dir + ":" + containerWorkdir,
 		"-v", s.generated + ":" + containerConfigPath + ":ro",
+	}
+	// The proxy terminates TLS for some hosts with its own CA: trust it, via
+	// the volume it wrote its bundle to. Mounted at runtime, never baked into
+	// an image, since the CA is per session.
+	if pn.caVolume != "" {
+		args = append(args, "-v", pn.caVolume+":"+containerCADir+":ro")
+		for _, v := range caTrustEnv {
+			args = append(args, "-e", v+"="+containerCAPath)
+		}
+	}
+	return append(args,
 		"-w", containerWorkdir,
 		s.image,
 		// -m selects the model for this session only, as in host mode.
-		"-m", providerKey + "/" + modelID, ".",
-	}
+		"-m", providerKey+"/"+modelID, ".",
+	)
 }
 
 // containerBaseURL rewrites a host-side URL (e.g. http://127.0.0.1:8080) to

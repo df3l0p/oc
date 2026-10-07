@@ -58,6 +58,7 @@ This starts (or reuses) a llama-server serving the default model, merges a
 | `-image`    | `default`                                         | Bundled sandbox image to use (see below; requires `-sandbox`) |
 | `-build`    | off                                               | Rebuild the sandbox image even if it exists (requires `-sandbox`) |
 | `-all-net`  | off                                               | Let the sandbox reach any public host, not just the default allow-list (requires `-sandbox`; see below) |
+| `-no-inspect` | off                                             | Don't decrypt the sandbox's HTTPS in the proxy; tunnel it unread (requires `-sandbox`; see below) |
 
 Each harness owns its own config path internally (opencode's is its default
 global config, `~/.config/opencode/opencode.jsonc`) — there's no flag for it.
@@ -148,6 +149,29 @@ opencode).
   still reach llama-server directly. The first `-sandbox` run also builds
   the proxy image (pulling the `golang` and `alpine` base images); both the
   network and the proxy container are torn down when the session ends.
+- **TLS interception:** by default the proxy decrypts HTTPS to the hosts on
+  its allow-list so it can log what the agent does with them: one line per
+  request in `$TMPDIR/oc-proxy-<id>.log` (the path is printed at startup, and
+  the file is kept after the session) with the method, host, path, status and
+  duration, and never the query string, headers or bodies. Hosts opened only by
+  `-all-net` are not decrypted; they stay tunnelled with their real
+  certificates. `-no-inspect` turns the whole thing off.
+  - *The CA:* the proxy creates a certificate authority for each session. Its
+    private key lives only in the proxy's memory: it is never written to disk
+    and never reaches the sandbox. The CA is restricted (an x509 name
+    constraint) to the allow-listed host names, and valid for 30 days.
+  - *Trust:* the proxy writes a bundle (the system roots plus the session CA's
+    certificate) to a per-session docker volume, which the sandbox mounts
+    read-only at `/etc/oc-ca`. `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`,
+    `GIT_SSL_CAINFO`, `CURL_CA_BUNDLE` and `REQUESTS_CA_BUNDLE` point at it, so
+    opencode, git, curl and most other tools trust the proxy. The volume is
+    removed with the network when the session ends. Nothing about the CA is
+    baked into an image.
+  - *Upstream:* the proxy still verifies the real server's certificate itself.
+  - *Limits:* HTTP/1.1 only, and WebSocket (`Upgrade`) requests are refused
+    with a 501. A tool that ignores the variables above, or pins certificates,
+    fails the TLS handshake; the reason is in the proxy log
+    (`TLS handshake for <host> failed`).
 - Session data inside the container is discarded on exit (`--rm`).
 
 ## Notes

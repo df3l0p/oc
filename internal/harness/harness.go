@@ -55,6 +55,12 @@ type Options struct {
 	// proxy, not just the default allow-list. The host machine and the LAN
 	// stay out of reach apart from llama-server.
 	AllNet bool
+	// NoInspect turns off TLS interception in the sandbox's egress proxy. By
+	// default the proxy terminates TLS (with a CA made for the session, which
+	// the sandbox is set up to trust) for the hosts on its allow-list, and
+	// logs each request; with NoInspect every HTTPS connection is tunnelled
+	// unread, as before.
+	NoInspect bool
 }
 
 // registry maps a harness name, as accepted by oc's --harness flag, to a

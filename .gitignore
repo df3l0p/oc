@@ -26,3 +26,6 @@
 .env
 .env.local
 *.log
+
+# Local design notes and plans (not committed)
+/docs/plans/
