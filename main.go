@@ -5,6 +5,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/signal"
@@ -16,6 +17,7 @@ import (
 	"github.com/df3l0p/oc/images"
 	"github.com/df3l0p/oc/internal/harness"
 	"github.com/df3l0p/oc/internal/llamaserver"
+	"github.com/df3l0p/oc/internal/proxy"
 )
 
 const providerKey = "llama-cpp"
@@ -37,6 +39,9 @@ type cliConfig struct {
 	allNet bool
 	// noInspect turns off TLS interception in the sandbox's proxy.
 	noInspect bool
+	// githubToken is OC_GITHUB_TOKEN, read (and unset) at startup; empty means
+	// no GitHub credentials. It is only kept with -sandbox.
+	githubToken string
 }
 
 const defaultHost = "127.0.0.1"
@@ -46,7 +51,43 @@ func (c cliConfig) validate() error {
 	if !c.sandbox && (c.image != "" || c.build || c.allNet || c.noInspect) {
 		return fmt.Errorf("-image, -build, -all-net and -no-inspect require -sandbox")
 	}
+	if c.githubToken != "" {
+		if err := proxy.ValidateToken(c.githubToken); err != nil {
+			return fmt.Errorf("OC_GITHUB_TOKEN is unusable: %w", err)
+		}
+		if c.noInspect {
+			return fmt.Errorf("OC_GITHUB_TOKEN is set, but -no-inspect stops the proxy from decrypting HTTPS, so it couldn't inject the token; unset one of them")
+		}
+	}
 	return nil
+}
+
+// envHelp is the Environment section of -h.
+const envHelp = `
+Environment:
+  OC_GITHUB_TOKEN   GitHub token the sandbox's proxy injects for git and gh at
+                    github.com and api.github.com (requires -sandbox). The sandbox
+                    only ever holds a placeholder. Prefer a fine-grained token
+                    scoped to what the agent needs.
+                    To reuse your logged-in gh account instead (broad scopes: the
+                    agent can do anything your account can):
+                        export OC_GITHUB_TOKEN=$(gh auth token)
+`
+
+// usage is flag.Usage: the flag defaults followed by the environment.
+func usage(w io.Writer) {
+	fmt.Fprintf(w, "Usage of %s:\n", os.Args[0])
+	flag.CommandLine.SetOutput(w)
+	flag.PrintDefaults()
+	fmt.Fprint(w, envHelp)
+}
+
+// githubTokenFromEnv returns OC_GITHUB_TOKEN and removes it from oc's
+// environment, so nothing oc starts afterwards (docker, llama-server) inherits it.
+func githubTokenFromEnv() string {
+	tok := os.Getenv("OC_GITHUB_TOKEN")
+	os.Unsetenv("OC_GITHUB_TOKEN")
+	return tok
 }
 
 // listenHost is the address llama-server listens on, and that oc itself uses
@@ -78,12 +119,18 @@ func parseFlags() (cliConfig, error) {
 	flag.BoolVar(&cfg.build, "build", false, "rebuild the sandbox image from scratch, without docker's layer cache, even if it exists (it is built when missing, never pulled); requires -sandbox")
 	flag.BoolVar(&cfg.allNet, "all-net", false, "let the sandbox reach any public host over http(s), not just the default allow-list (your machine and LAN stay blocked apart from llama-server); requires -sandbox")
 	flag.BoolVar(&cfg.noInspect, "no-inspect", false, "don't terminate TLS in the sandbox's proxy: tunnel every HTTPS connection unread (by default the proxy decrypts the allow-listed hosts with a CA made for the session, and logs each request); requires -sandbox")
+	flag.Usage = func() { usage(os.Stderr) }
 	flag.Parse()
 	flag.Visit(func(f *flag.Flag) {
 		if f.Name == "host" {
 			cfg.hostSet = true
 		}
 	})
+	cfg.githubToken = githubTokenFromEnv()
+	if cfg.githubToken != "" && !cfg.sandbox {
+		fmt.Fprintln(os.Stderr, "oc: note: OC_GITHUB_TOKEN is ignored without -sandbox")
+		cfg.githubToken = ""
+	}
 	return cfg, cfg.validate()
 }
 
@@ -100,9 +147,15 @@ func run() error {
 		return err
 	}
 
-	h, err := harness.New(cfg.harness, harness.Options{Sandbox: cfg.sandbox, Image: cfg.image, Build: cfg.build, AllNet: cfg.allNet, NoInspect: cfg.noInspect})
+	h, err := harness.New(cfg.harness, harness.Options{Sandbox: cfg.sandbox, Image: cfg.image, Build: cfg.build, AllNet: cfg.allNet, NoInspect: cfg.noInspect, GitHubToken: cfg.githubToken})
 	if err != nil {
 		return err
+	}
+	if cfg.githubToken != "" {
+		fmt.Fprintln(os.Stderr, "oc: GitHub token: the sandbox proxy injects it at github.com and api.github.com; the sandbox only holds a placeholder (use a fine-grained token scoped to what the agent needs)")
+		if strings.HasPrefix(cfg.githubToken, "ghp_") {
+			fmt.Fprintln(os.Stderr, "oc: warning: OC_GITHUB_TOKEN looks like a classic token, which can't be limited to specific repositories; a fine-grained token is safer")
+		}
 	}
 	if err := h.Available(); err != nil {
 		return err

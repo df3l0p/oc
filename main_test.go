@@ -1,7 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"errors"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/df3l0p/oc/internal/harness"
@@ -50,6 +53,47 @@ func TestListenHost(t *testing.T) {
 		got, err := listenHost(tt.h, tt.host, tt.hostSet)
 		if (err != nil) != tt.wantErr || got != tt.want {
 			t.Errorf("%s: listenHost = (%q, %v), want (%q, err=%v)", tt.name, got, err, tt.want, tt.wantErr)
+		}
+	}
+}
+
+func TestGitHubTokenFromEnvReadsAndUnsets(t *testing.T) {
+	t.Setenv("OC_GITHUB_TOKEN", "github_pat_x")
+	if got := githubTokenFromEnv(); got != "github_pat_x" {
+		t.Fatalf("token = %q", got)
+	}
+	if v, ok := os.LookupEnv("OC_GITHUB_TOKEN"); ok {
+		t.Errorf("OC_GITHUB_TOKEN is still set (%q): child processes would inherit it", v)
+	}
+}
+
+func TestValidateRejectsAGitHubTokenWithNoInspect(t *testing.T) {
+	c := cliConfig{sandbox: true, noInspect: true, githubToken: "github_pat_x"}
+	if err := c.validate(); err == nil || !strings.Contains(err.Error(), "-no-inspect") {
+		t.Errorf("err = %v, want one naming -no-inspect", err)
+	}
+}
+
+func TestValidateRejectsAnUnusableGitHubToken(t *testing.T) {
+	c := cliConfig{sandbox: true, githubToken: "github_pat_x\n"}
+	err := c.validate()
+	if err == nil || !strings.Contains(err.Error(), "OC_GITHUB_TOKEN") || strings.Contains(err.Error(), "github_pat_x") {
+		t.Errorf("err = %v, want one naming OC_GITHUB_TOKEN and not echoing it", err)
+	}
+}
+
+func TestValidateAcceptsAGitHubTokenWithSandbox(t *testing.T) {
+	if err := (cliConfig{sandbox: true, githubToken: "github_pat_x"}).validate(); err != nil {
+		t.Errorf("err = %v", err)
+	}
+}
+
+func TestUsageDocumentsTheGitHubTokenAndTheGhShortcut(t *testing.T) {
+	var buf bytes.Buffer
+	usage(&buf)
+	for _, want := range []string{"Environment:", "OC_GITHUB_TOKEN", "fine-grained", "export OC_GITHUB_TOKEN=$(gh auth token)", "-sandbox"} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("usage is missing %q:\n%s", want, buf.String())
 		}
 	}
 }

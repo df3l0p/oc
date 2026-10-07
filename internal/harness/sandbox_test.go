@@ -422,3 +422,67 @@ func TestSandboxRunArgsWithoutAProxyCAMountNothing(t *testing.T) {
 		}
 	}
 }
+
+func TestNewPlaceholderIsRandomAndTokenShapedEnough(t *testing.T) {
+	a, err := newPlaceholder()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := newPlaceholder()
+	if a == b || !strings.HasPrefix(a, "oc_placeholder_") || len(a) != len("oc_placeholder_")+32 {
+		t.Errorf("placeholders %q, %q", a, b)
+	}
+}
+
+func TestRunArgsGiveTheSandboxOnlyThePlaceholder(t *testing.T) {
+	s := newSandbox(Options{Sandbox: true, GitHubToken: "github_pat_SECRET"}, "")
+	s.image, s.generated = "oc-sandbox-default:x", "/tmp/cfg"
+	s.githubPlaceholder = "oc_placeholder_abc"
+	pn := &proxyNet{network: "oc-net-1", container: "oc-proxy-1"}
+	joined := strings.Join(s.runArgs("oc-1-aa", "/work/proj", "llama-cpp", "m1", pn, false), " ")
+	if strings.Contains(joined, "github_pat_SECRET") {
+		t.Fatalf("the real token is in the sandbox's argv: %s", joined)
+	}
+	for _, want := range []string{
+		"-e GH_TOKEN=oc_placeholder_abc",
+		"-e GH_NO_UPDATE_NOTIFIER=1",
+		"-e GIT_TERMINAL_PROMPT=0",
+		"-e GIT_CONFIG_COUNT=2",
+		"-e GIT_CONFIG_KEY_0=credential.https://github.com.helper",
+		"-e GIT_CONFIG_VALUE_0= ",
+		"-e GIT_CONFIG_KEY_1=credential.https://github.com.helper",
+		`-e GIT_CONFIG_VALUE_1=!f() { echo username=x-access-token; echo "password=$GH_TOKEN"; }; f`,
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("run args missing %q:\n%s", want, joined)
+		}
+	}
+}
+
+func TestRunArgsWithoutAGitHubTokenSetNoGitHubEnv(t *testing.T) {
+	s := newSandbox(Options{Sandbox: true}, "")
+	s.image, s.generated = "oc-sandbox-default:x", "/tmp/cfg"
+	pn := &proxyNet{network: "oc-net-1", container: "oc-proxy-1"}
+	joined := strings.Join(s.runArgs("oc-1-aa", "/work/proj", "llama-cpp", "m1", pn, false), " ")
+	for _, bad := range []string{"GH_TOKEN", "GIT_CONFIG_COUNT"} {
+		if strings.Contains(joined, bad) {
+			t.Errorf("run args mention %s without a token: %s", bad, joined)
+		}
+	}
+}
+
+func TestProviderConfigCarriesTheTokenAndPlaceholder(t *testing.T) {
+	s := newSandbox(Options{Sandbox: true, GitHubToken: "github_pat_SECRET"}, "")
+	s.githubPlaceholder = "oc_placeholder_abc"
+	b, err := s.providerConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "github_pat_SECRET") || !strings.Contains(string(b), "oc_placeholder_abc") {
+		t.Errorf("config = %s", b)
+	}
+	none := newSandbox(Options{Sandbox: true}, "")
+	if b, _ := none.providerConfig(); b != nil {
+		t.Errorf("no token must mean no provider config, got %q", b)
+	}
+}
