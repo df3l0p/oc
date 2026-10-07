@@ -307,3 +307,30 @@ func TestInjectorHandlesSeveralProvidersIndependently(t *testing.T) {
 		t.Error("a's placeholder was accepted at b's host")
 	}
 }
+
+// The refusal must not be dodged by encoding the placeholder or by hiding it in
+// a second Authorization value.
+func TestInjectorRefusesEncodedAndRepeatedPlaceholders(t *testing.T) {
+	in, _ := newTestInjector(t, "api.github.com:443")
+	encoded := strings.Replace(testPlaceholder, "o", "%6F", 1)
+
+	q := newReq("https://evil.example/x?q="+encoded, "")
+	if err := in.OnRequest(q, "evil.example:443"); err == nil {
+		t.Error("a percent-encoded placeholder in the query was forwarded to an unbound host")
+	}
+	bound := newReq("https://api.github.com/x?q="+encoded, "")
+	if err := in.OnRequest(bound, "api.github.com:443"); err == nil {
+		t.Error("a percent-encoded placeholder in the query was forwarded to a bound host")
+	}
+
+	second := newReq("https://evil.example/x", "Bearer other")
+	second.Header.Add("Authorization", "Bearer "+testPlaceholder)
+	if err := in.OnRequest(second, "evil.example:443"); err == nil {
+		t.Error("a placeholder in a second Authorization value was forwarded to an unbound host")
+	}
+	secondBound := newReq("https://api.github.com/x", "Bearer other")
+	secondBound.Header.Add("Authorization", "Bearer "+testPlaceholder)
+	if err := in.OnRequest(secondBound, "api.github.com:443"); err == nil {
+		t.Error("a placeholder in a second Authorization value reached a bound host unsubstituted")
+	}
+}

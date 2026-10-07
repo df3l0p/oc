@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"unicode"
 )
@@ -145,13 +146,26 @@ func bound(p Provider, target string) bool {
 }
 
 // carries reports whether the placeholder appears in the request's path,
-// query or headers; the Authorization header counts only with includeAuth.
+// query (also percent-decoded) or headers. For the Authorization header it
+// looks at every value with includeAuth, and otherwise only at the values after
+// the first: the first is the one an Injector substitutes in.
 func carries(r *http.Request, ph string, includeAuth bool) bool {
 	if strings.Contains(r.URL.EscapedPath(), ph) || strings.Contains(r.URL.Path, ph) || strings.Contains(r.URL.RawQuery, ph) {
 		return true
 	}
+	if q, err := url.QueryUnescape(r.URL.RawQuery); err == nil && strings.Contains(q, ph) {
+		return true
+	}
 	for k, vs := range r.Header {
 		if k == "Authorization" {
+			if !includeAuth && len(vs) > 0 {
+				vs = vs[1:]
+			}
+			for _, v := range vs {
+				if authCarries(v, ph) {
+					return true
+				}
+			}
 			continue
 		}
 		for _, v := range vs {
@@ -160,7 +174,7 @@ func carries(r *http.Request, ph string, includeAuth bool) bool {
 			}
 		}
 	}
-	return includeAuth && authCarries(r.Header.Get("Authorization"), ph)
+	return false
 }
 
 func authCarries(auth, ph string) bool {
