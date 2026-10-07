@@ -15,6 +15,7 @@ import (
 
 	"github.com/df3l0p/oc/images"
 	"github.com/df3l0p/oc/internal/opencodeconfig"
+	"github.com/df3l0p/oc/internal/proxy"
 )
 
 const (
@@ -79,6 +80,10 @@ type Sandbox struct {
 	// inspect has the proxy terminate TLS for the policy's explicit hosts
 	// (see Options.NoInspect).
 	inspect bool
+	// githubToken is the real token, held only to hand to the proxy; the sandbox
+	// container never sees it. githubPlaceholder stands in for it there.
+	githubToken       string
+	githubPlaceholder string
 }
 
 // hostOS is runtime.GOOS, replaceable in tests.
@@ -105,7 +110,7 @@ func newSandbox(opts Options, hostConfig string) *Sandbox {
 	if name == "" {
 		name = images.Default
 	}
-	return &Sandbox{name: name, build: opts.Build, allNet: opts.AllNet, inspect: !opts.NoInspect, hostConfig: hostConfig, hostIP: "host-gateway"}
+	return &Sandbox{name: name, build: opts.Build, allNet: opts.AllNet, inspect: !opts.NoInspect, githubToken: opts.GitHubToken, hostConfig: hostConfig, hostIP: "host-gateway"}
 }
 
 // BindHost returns the address llama-server should listen on so the container
@@ -276,7 +281,18 @@ func (s *Sandbox) Run(dir, providerKey, modelID string) error {
 		return fmt.Errorf("sandbox: Prepare must be called before Run")
 	}
 
-	pn, err := startProxyNet(s.proxyImage, s.hostIP, s.policy(), s.inspect)
+	var providers []byte
+	if s.githubToken != "" {
+		placeholder, err := newPlaceholder()
+		if err != nil {
+			return err
+		}
+		s.githubPlaceholder = placeholder
+		if providers, err = s.providerConfig(); err != nil {
+			return err
+		}
+	}
+	pn, err := startProxyNet(s.proxyImage, s.hostIP, s.policy(), s.inspect, providers)
 	if err != nil {
 		return fmt.Errorf("starting sandbox proxy: %w", err)
 	}
@@ -359,12 +375,50 @@ func (s *Sandbox) runArgs(name, dir, providerKey, modelID string, pn *proxyNet, 
 			args = append(args, "-e", v+"="+containerCAPath)
 		}
 	}
+	if s.githubPlaceholder != "" {
+		args = append(args, githubEnv(s.githubPlaceholder)...)
+	}
 	return append(args,
 		"-w", containerWorkdir,
 		s.image,
 		// -m selects the model for this session only, as in host mode.
 		"-m", providerKey+"/"+modelID, ".",
 	)
+}
+
+// newPlaceholder returns an opaque stand-in for a credential.
+func newPlaceholder() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("generating a credential placeholder: %w", err)
+	}
+	return "oc_placeholder_" + hex.EncodeToString(b[:]), nil
+}
+
+// providerConfig is the line of provider config for oc-proxy's stdin, or nil
+// when the session has no credentials.
+func (s *Sandbox) providerConfig() ([]byte, error) {
+	if s.githubToken == "" {
+		return nil, nil
+	}
+	return proxy.EncodeProviders([]proxy.ProviderConfig{{Name: "github", Token: s.githubToken, Placeholder: s.githubPlaceholder}})
+}
+
+// githubEnv is what makes gh and git use the placeholder: gh reads GH_TOKEN, and
+// git gets a credential helper that answers with it (the empty first helper
+// clears any inherited ones).
+func githubEnv(placeholder string) []string {
+	const key = "credential.https://github.com.helper"
+	return []string{
+		"-e", "GH_TOKEN=" + placeholder,
+		"-e", "GH_NO_UPDATE_NOTIFIER=1",
+		"-e", "GIT_TERMINAL_PROMPT=0",
+		"-e", "GIT_CONFIG_COUNT=2",
+		"-e", "GIT_CONFIG_KEY_0=" + key,
+		"-e", "GIT_CONFIG_VALUE_0=",
+		"-e", "GIT_CONFIG_KEY_1=" + key,
+		"-e", `GIT_CONFIG_VALUE_1=!f() { echo username=x-access-token; echo "password=$GH_TOKEN"; }; f`,
+	}
 }
 
 // containerBaseURL rewrites a host-side URL (e.g. http://127.0.0.1:8080) to

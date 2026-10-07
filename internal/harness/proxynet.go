@@ -1,10 +1,12 @@
 package harness
 
 import (
+	"bytes"
 	"crypto/rand"
 	_ "embed"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -44,6 +46,9 @@ type proxyNet struct {
 	// closed once it has exited.
 	logFollower *exec.Cmd
 	followDone  chan struct{}
+	// attach is the `docker attach` delivering the provider config on the proxy
+	// container's stdin; nil when there is none.
+	attach *exec.Cmd
 }
 
 // proxyCAMount is where the proxy container mounts caVolume. It must be the
@@ -59,8 +64,14 @@ const logFollowGrace = 2 * time.Second
 // Sandbox.hostIP already computes for host.docker.internal). policy is the
 // proxy's allow-list, in the proxy's policy format. With inspect the proxy
 // also terminates TLS for the policy's explicit hosts: it gets a CA volume to
-// write its trust bundle to, and its log is followed into a file.
-func startProxyNet(image, hostIP string, policy []byte, inspect bool) (*proxyNet, error) {
+// write its trust bundle to, and its log is followed into a file. providers,
+// when non-empty, is the line of provider config oc-proxy reads from its stdin
+// (see proxy.EncodeProviders); it requires inspect, since credentials can only
+// be injected into decrypted requests.
+func startProxyNet(image, hostIP string, policy []byte, inspect bool, providers []byte) (*proxyNet, error) {
+	if len(providers) > 0 && !inspect {
+		return nil, fmt.Errorf("credential providers need TLS interception")
+	}
 	var suffix [4]byte
 	if _, err := rand.Read(suffix[:]); err != nil {
 		return nil, fmt.Errorf("generating proxy network name: %w", err)
@@ -108,13 +119,35 @@ func startProxyNet(image, hostIP string, policy []byte, inspect bool) (*proxyNet
 	if inspect {
 		runArgs = append(runArgs, "-v", p.caVolume+":"+proxyCAMount)
 	}
+	if len(providers) > 0 {
+		// Keep stdin open: the provider config is attached to it below.
+		runArgs = append(runArgs, "-i")
+	}
 	runArgs = append(runArgs, image)
 	if inspect {
 		runArgs = append(runArgs, "-intercept")
 	}
+	if len(providers) > 0 {
+		runArgs = append(runArgs, "-providers-stdin")
+	}
 	if out, err := exec.Command("docker", runArgs...).CombinedOutput(); err != nil {
 		p.stop()
 		return nil, fmt.Errorf("starting proxy container: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+
+	if len(providers) > 0 {
+		// The container reads its provider config from stdin before it listens.
+		// Sent through docker attach so the secret is in no argv, env or file.
+		// --sig-proxy=false: oc's own Ctrl+C must not be forwarded to the proxy.
+		cmd := exec.Command("docker", "attach", "--sig-proxy=false", p.container)
+		cmd.Stdin = bytes.NewReader(providers)
+		cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
+		if err := cmd.Start(); err != nil {
+			p.stop()
+			return nil, fmt.Errorf("attaching to the proxy container: %w", err)
+		}
+		p.attach = cmd
+		go cmd.Wait()
 	}
 
 	if out, err := exec.Command("docker", "network", "connect", p.network, p.container).CombinedOutput(); err != nil {
@@ -210,6 +243,9 @@ func (p *proxyNet) stop() {
 	}
 	if p.container != "" {
 		exec.Command("docker", "rm", "-f", p.container).Run()
+	}
+	if p.attach != nil && p.attach.Process != nil {
+		p.attach.Process.Kill()
 	}
 	if p.followDone != nil {
 		select {

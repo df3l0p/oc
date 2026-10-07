@@ -67,6 +67,12 @@ and points the agent at it via that agent's own config env var
 (`OPENCODE_CONFIG` for opencode), so it works even if the agent's normal
 config resolution would otherwise pick something else up.
 
+### Environment
+
+| Variable          | Description |
+| ----------------- | ----------- |
+| `OC_GITHUB_TOKEN` | GitHub token the sandbox's proxy injects for `git` and `gh` (requires `-sandbox`; see *GitHub credentials* below). Prefer a fine-grained token; to reuse your `gh` login, `export OC_GITHUB_TOKEN=$(gh auth token)`. |
+
 ### Sharing a llama-server across sessions
 
 If a healthy llama-server is already listening on the target port, `oc`
@@ -134,8 +140,10 @@ opencode).
   each session gets its own proxy container on a private network between the
   two, and all of the sandbox's HTTP(S) traffic is forced through it via
   `HTTP_PROXY`/`HTTPS_PROXY`. The proxy only allows the session's model
-  server plus `registry.npmjs.org`, `github.com` and `models.dev` (the
-  latter three over https) and blocks everything else, including non-HTTP
+  server plus `registry.npmjs.org`, `github.com`, `api.github.com`,
+  `codeload.github.com`, `raw.githubusercontent.com`,
+  `objects.githubusercontent.com` and `models.dev` (the
+  latter ones over https) and blocks everything else, including non-HTTP
   protocols such as git over ssh. Those defaults live in
   `internal/harness/policy.txt` (one `host:port` per line), built into `oc`.
   `-all-net` opens the sandbox up to any public host over http(s) instead;
@@ -172,6 +180,29 @@ opencode).
     with a 501. A tool that ignores the variables above, or pins certificates,
     fails the TLS handshake; the reason is in the proxy log
     (`TLS handshake for <host> failed`).
+- **GitHub credentials:** with `OC_GITHUB_TOKEN` set, the proxy injects the
+  token into requests to `github.com` (git over https) and `api.github.com`
+  (`gh`), so the agent can clone private repos, push and open PRs without the
+  token ever being inside the sandbox.
+  - *What the sandbox gets:* `GH_TOKEN` set to a random per-session placeholder
+    and a git credential helper that answers with it. The proxy replaces the
+    placeholder in the `Authorization` header (Bearer, token or Basic) and only
+    for those two hosts. On decrypted HTTPS requests the placeholder anywhere
+    else (path, query, other headers, a second `Authorization` value), or sent
+    to any other decrypted host, is refused with a 403 and not forwarded. Request
+    bodies aren't inspected, and plain-http requests and tunnelled hosts (those
+    opened only by `-all-net`) are never checked; a placeholder is worthless
+    outside the session's proxy, so the worst case is that it is seen upstream.
+  - *How the token reaches the proxy:* `oc` reads `OC_GITHUB_TOKEN`, unsets it,
+    and sends it to the proxy container on its stdin: never as an argument or
+    environment variable (those show in `docker inspect`), never on disk. The
+    proxy keeps it in memory only.
+  - *Scope:* the token is the only limit on what the agent can do with it; the
+    proxy doesn't restrict reads or writes. Use a fine-grained token scoped to
+    what the agent needs. `export OC_GITHUB_TOKEN=$(gh auth token)` reuses your
+    `gh` login, whose scopes are broad.
+  - Requires `-sandbox` (ignored with a note otherwise) and TLS interception:
+    `oc` refuses `-no-inspect` while the variable is set.
 - Session data inside the container is discarded on exit (`--rm`).
 
 ## Notes

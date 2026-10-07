@@ -61,6 +61,9 @@ type Options struct {
 	// logs each request; with NoInspect every HTTPS connection is tunnelled
 	// unread, as before.
 	NoInspect bool
+	// GitHubToken, when set (with Sandbox), is injected by the sandbox's proxy
+	// into requests to GitHub; the sandbox itself only gets a placeholder.
+	GitHubToken string
 }
 
 // registry maps a harness name, as accepted by oc's --harness flag, to a

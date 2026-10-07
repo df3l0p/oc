@@ -1,5 +1,6 @@
 # The default sandbox image: the base (opencode, git) plus a few general
-# command-line tools for the agent.
+# command-line tools for the agent (including gh, which uses the GitHub token
+# the egress proxy injects).
 #
 # A layer on base: oc builds base first and passes its tag in as OC_BASE (the
 # value here is only a placeholder that keeps the FROM lint quiet).
@@ -8,6 +9,6 @@ FROM ${OC_BASE}
 
 USER root
 RUN apt-get update \
- && apt-get install -y --no-install-recommends jq ripgrep curl \
+ && apt-get install -y --no-install-recommends jq ripgrep curl gh \
  && rm -rf /var/lib/apt/lists/*
 USER oc
