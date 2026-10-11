@@ -16,10 +16,29 @@ func TestValidateRejectsSandboxOnlyFlagsWithoutSandbox(t *testing.T) {
 			t.Errorf("validate(%+v) = nil, want an error", cfg)
 		}
 	}
-	for _, cfg := range []cliConfig{{}, {sandbox: true}, {sandbox: true, image: "x", build: true, allNet: true, noInspect: true}} {
+	for _, cfg := range []cliConfig{{}, {sandbox: true}, {sandboxUpdate: true}, {sandbox: true, image: "x", build: true, allNet: true, noInspect: true}} {
 		if err := cfg.validate(); err != nil {
 			t.Errorf("validate(%+v) = %v, want nil", cfg, err)
 		}
+	}
+}
+
+// TestSandboxUpdateImpliesSandboxAndBuild checks that -sandbox-update turns
+// into a from-scratch sandbox rebuild, so prepare runs and validate passes
+// for the sandbox-only flags given alongside it.
+func TestSandboxUpdateImpliesSandboxAndBuild(t *testing.T) {
+	c := cliConfig{sandboxUpdate: true, image: "x"}
+	c.applyImplications()
+	if !c.sandbox || !c.build {
+		t.Fatalf("applyImplications = sandbox=%v build=%v, want both true", c.sandbox, c.build)
+	}
+	if err := c.validate(); err != nil {
+		t.Errorf("validate(%+v) = %v, want nil", c, err)
+	}
+	c2 := cliConfig{}
+	c2.applyImplications()
+	if c2.sandbox || c2.build {
+		t.Errorf("applyImplications without -sandbox-update = sandbox=%v build=%v, want both false", c2.sandbox, c2.build)
 	}
 }
 
@@ -106,5 +125,25 @@ func TestTokenWarningFlagsAnythingButAFineGrainedToken(t *testing.T) {
 	}
 	if w := tokenWarning("github_pat_abc"); w != "" {
 		t.Errorf("tokenWarning(fine-grained) = %q, want none", w)
+	}
+}
+
+// TestSetGitHubTokenIsKeptOnlyForASession checks that the token is dropped when
+// no session will use it: without -sandbox, and with -sandbox-update, which
+// exits before one starts.
+func TestSetGitHubTokenIsKeptOnlyForASession(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cfg  cliConfig
+		want string
+	}{
+		{"no sandbox", cliConfig{}, ""},
+		{"sandbox", cliConfig{sandbox: true}, "tok"},
+		{"sandbox-update", cliConfig{sandbox: true, sandboxUpdate: true}, ""},
+	} {
+		tc.cfg.setGitHubToken("tok")
+		if tc.cfg.githubToken != tc.want {
+			t.Errorf("%s: githubToken = %q, want %q", tc.name, tc.cfg.githubToken, tc.want)
+		}
 	}
 }

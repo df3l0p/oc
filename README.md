@@ -57,6 +57,7 @@ This starts (or reuses) a llama-server serving the default model, merges a
 | `-sandbox`  | off                                               | Run the agent in a Docker container (see below)  |
 | `-image`    | `default`                                         | Bundled sandbox image to use (see below; requires `-sandbox`) |
 | `-build`    | off                                               | Rebuild the sandbox image even if it exists (requires `-sandbox`) |
+| `-sandbox-update` | off                                         | Rebuild the sandbox images (all, or just `-image`) from scratch, then exit without running the agent (implies `-sandbox` and `-build`) |
 | `-all-net`  | off                                               | Let the sandbox reach any public host, not just the default allow-list (requires `-sandbox`; see below) |
 | `-no-inspect` | off                                             | Don't decrypt the sandbox's HTTPS in the proxy; tunnel it unread (requires `-sandbox`; see below) |
 
@@ -109,7 +110,9 @@ opencode).
   from its Dockerfile (a build failure is an error). `-build` rebuilds the
   images from scratch, ignoring docker's layer cache, so it also picks up new
   apt package versions and a newer `opencode-ai`; without it, an existing image
-  is reused indefinitely.
+  is reused indefinitely. `-sandbox-update` is the same rebuild, but of every bundled
+  image (or only `-image`'s, if given), and it exits instead of running a
+  session (it implies `-sandbox` and `-build`).
   Images are tagged `oc-sandbox-<name>:<hash>` from the Dockerfile's contents
   (and that of the base), so a changed Dockerfile builds a new image and an
   unchanged one is reused. Note the build itself still fetches the

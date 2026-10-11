@@ -34,6 +34,9 @@ type cliConfig struct {
 	sandbox bool
 	image   string
 	build   bool
+	// sandboxUpdate rebuilds the sandbox images and exits without running the
+	// agent. applyImplications turns it into sandbox and build.
+	sandboxUpdate bool
 	// allNet lets the sandbox reach any public host, not just the
 	// default allow-list.
 	allNet bool
@@ -60,6 +63,18 @@ func (c cliConfig) validate() error {
 		}
 	}
 	return nil
+}
+
+// applyImplications derives flags implied by others: -sandbox-update is a
+// sandbox action, and refreshing an image means rebuilding it even if it
+// exists (-build's behaviour), since the tags only change with the
+// Dockerfiles — a cached or existing image would keep serving the old
+// packages and the old opencode.
+func (c *cliConfig) applyImplications() {
+	if c.sandboxUpdate {
+		c.sandbox = true
+		c.build = true
+	}
 }
 
 // envHelp is the Environment section of -h.
@@ -90,6 +105,19 @@ func tokenWarning(token string) string {
 		return ""
 	}
 	return "OC_GITHUB_TOKEN isn't a fine-grained token (github_pat_…), so it can't be limited to specific repositories; a fine-grained token is safer"
+}
+
+// setGitHubToken keeps tok only when a session will use it: it needs a sandbox,
+// and -sandbox-update exits before one starts.
+func (c *cliConfig) setGitHubToken(tok string) {
+	c.githubToken = tok
+	if tok != "" && !c.sandbox {
+		fmt.Fprintln(os.Stderr, "oc: note: OC_GITHUB_TOKEN is ignored without -sandbox")
+		c.githubToken = ""
+	} else if tok != "" && c.sandboxUpdate {
+		fmt.Fprintln(os.Stderr, "oc: note: OC_GITHUB_TOKEN is ignored with -sandbox-update (no session runs)")
+		c.githubToken = ""
+	}
 }
 
 // githubTokenFromEnv returns OC_GITHUB_TOKEN and removes it from oc's
@@ -127,6 +155,7 @@ func parseFlags() (cliConfig, error) {
 	flag.BoolVar(&cfg.sandbox, "sandbox", false, "run the harness in a Docker container that mounts the current directory")
 	flag.StringVar(&cfg.image, "image", "", "bundled sandbox image to use (default "+images.Default+"; available: "+strings.Join(images.Names(), ", ")+"); requires -sandbox")
 	flag.BoolVar(&cfg.build, "build", false, "rebuild the sandbox image from scratch, without docker's layer cache, even if it exists (it is built when missing, never pulled); requires -sandbox")
+	flag.BoolVar(&cfg.sandboxUpdate, "sandbox-update", false, "rebuild the sandbox images (every bundled one, or just -image if given; plus the base and the proxy image) from scratch, without docker's layer cache, so it picks up new apt packages and a newer opencode-ai, then exit without running the agent; implies -sandbox")
 	flag.BoolVar(&cfg.allNet, "all-net", false, "let the sandbox reach any public host over http(s), not just the default allow-list (your machine and LAN stay blocked apart from llama-server); requires -sandbox")
 	flag.BoolVar(&cfg.noInspect, "no-inspect", false, "don't terminate TLS in the sandbox's proxy: tunnel every HTTPS connection unread (by default the proxy decrypts the allow-listed hosts with a CA made for the session, and logs each request); requires -sandbox")
 	flag.Usage = func() { usage(os.Stderr) }
@@ -136,11 +165,8 @@ func parseFlags() (cliConfig, error) {
 			cfg.hostSet = true
 		}
 	})
-	cfg.githubToken = githubTokenFromEnv()
-	if cfg.githubToken != "" && !cfg.sandbox {
-		fmt.Fprintln(os.Stderr, "oc: note: OC_GITHUB_TOKEN is ignored without -sandbox")
-		cfg.githubToken = ""
-	}
+	cfg.applyImplications()
+	cfg.setGitHubToken(githubTokenFromEnv())
 	return cfg, cfg.validate()
 }
 
@@ -172,10 +198,22 @@ func run() error {
 	}
 	// Before starting any server, so a failed image pull/build leaves nothing
 	// running.
-	if p, ok := h.(harness.Preparer); ok {
+	// -sandbox-update without -image refreshes every bundled image, not just
+	// the default.
+	if a, ok := h.(harness.AllPreparer); ok && cfg.sandboxUpdate && cfg.image == "" {
+		if err := a.PrepareAll(); err != nil {
+			return err
+		}
+	} else if p, ok := h.(harness.Preparer); ok {
 		if err := p.Prepare(); err != nil {
 			return err
 		}
+	}
+	// -sandbox-update is done once the images are freshly built: no server,
+	// no session.
+	if cfg.sandboxUpdate {
+		fmt.Fprintln(os.Stderr, "oc: sandbox images are up to date")
+		return nil
 	}
 
 	// oc talks to the server on the address it listens on: a server bound to a

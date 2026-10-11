@@ -174,13 +174,25 @@ func (s *Sandbox) Available() error {
 // (and, for a layer, its base's tag), so a changed Dockerfile builds a new image
 // and an unchanged one is reused. An unknown name fails before docker is used.
 func (s *Sandbox) Prepare() error {
-	dockerfile, err := images.Read(s.name)
-	if err != nil {
-		return err
-	}
+	return s.prepare([]string{s.name})
+}
+
+// PrepareAll is Prepare for every bundled image, with the base and the proxy
+// image built once: what -sandbox-update does when no -image is given.
+func (s *Sandbox) PrepareAll() error {
+	return s.prepare(images.Names())
+}
+
+func (s *Sandbox) prepare(names []string) error {
 	base, err := images.ReadBase()
 	if err != nil {
 		return err
+	}
+	dockerfiles := make([][]byte, len(names))
+	for i, name := range names {
+		if dockerfiles[i], err = images.Read(name); err != nil {
+			return err
+		}
 	}
 
 	baseTag := imageTag(images.Base, base, "")
@@ -188,11 +200,15 @@ func (s *Sandbox) Prepare() error {
 		return err
 	}
 
-	tag := imageTag(s.name, dockerfile, baseTag)
-	if err := s.ensure(tag, dockerfile, baseTag); err != nil {
-		return err
+	for i, name := range names {
+		tag := imageTag(name, dockerfiles[i], baseTag)
+		if err := s.ensure(tag, dockerfiles[i], baseTag); err != nil {
+			return err
+		}
+		if name == s.name {
+			s.image = tag
+		}
 	}
-	s.image = tag
 
 	proxyTag, err := prepareProxyImage(s.build)
 	if err != nil {

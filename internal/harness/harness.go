@@ -32,6 +32,12 @@ type Preparer interface {
 	Prepare() error
 }
 
+// AllPreparer is a Preparer that can also set up everything it offers, not
+// just the selected variant (e.g. every bundled sandbox image).
+type AllPreparer interface {
+	PrepareAll() error
+}
+
 // BindHoster is implemented by harnesses that run the agent somewhere the
 // host's loopback isn't reachable (a container), so the model server must
 // listen on a different address. It returns the narrowest host address the
