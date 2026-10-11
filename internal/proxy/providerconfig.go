@@ -29,11 +29,13 @@ func EncodeProviders(cfgs []ProviderConfig) ([]byte, error) {
 	return append(b, '\n'), nil
 }
 
-// ReadProviders reads one line of provider config and builds the providers.
-// It stops at the newline, so the sender need not close the stream. Names and
-// placeholders must be unique: a shared placeholder would make it ambiguous
-// whose credential to inject. Errors never include the line's content: it
-// holds secrets.
+// ReadProviders reads one newline-terminated line holding a JSON
+// providersMessage (`{"providers":[{...},{...}]}`, so any number of providers
+// in that one line) and builds the providers. It stops at the newline, so the
+// sender need not close the stream. Names and placeholders must be unique: the
+// placeholder is how the proxy tells whose credential to inject, so a shared
+// one would be ambiguous. Errors never include the line's content: it holds
+// secrets.
 func ReadProviders(r *bufio.Reader) ([]Provider, error) {
 	line, err := r.ReadBytes('\n')
 	if err != nil {
