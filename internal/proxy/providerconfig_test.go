@@ -104,3 +104,17 @@ func TestInjectorFromStdinPassesTheReadErrors(t *testing.T) {
 		t.Error("want an error for unreadable config")
 	}
 }
+
+func TestReadProvidersBuildsGitHubAndOpenRouterFromOneLine(t *testing.T) {
+	b, _ := EncodeProviders([]ProviderConfig{
+		{Name: "github", Token: "github_pat_x", Placeholder: "p1"},
+		{Name: "openrouter", Token: "sk-or-x", Placeholder: "p2"},
+	})
+	ps, err := ReadProviders(bufio.NewReader(bytes.NewReader(b)))
+	if err != nil || len(ps) != 2 {
+		t.Fatalf("providers = %+v, %v", ps, err)
+	}
+	if ps[1].Name() != "openrouter" || strings.Join(ps[1].Hosts(), ",") != "openrouter.ai:443" {
+		t.Errorf("openrouter provider = %s %v", ps[1].Name(), ps[1].Hosts())
+	}
+}

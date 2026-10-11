@@ -72,6 +72,7 @@ config resolution would otherwise pick something else up.
 | Variable          | Description |
 | ----------------- | ----------- |
 | `OC_GITHUB_TOKEN` | GitHub token the sandbox's proxy injects for `git` and `gh` (requires `-sandbox`; see *GitHub credentials* below). Prefer a fine-grained token; to reuse your `gh` login, `export OC_GITHUB_TOKEN=$(gh auth token)`. |
+| `OC_OPENROUTER_API_KEY` | OpenRouter API key the sandbox's proxy injects at `openrouter.ai` (requires `-sandbox`; see *OpenRouter models* below). Use a dedicated key with a low credit limit. |
 
 ### Sharing a llama-server across sessions
 
@@ -197,6 +198,27 @@ opencode).
     proxy doesn't restrict reads or writes. Use a fine-grained token scoped to
     what the agent needs. `export OC_GITHUB_TOKEN=$(gh auth token)` reuses your
     `gh` login, whose scopes are broad.
+  - Requires `-sandbox` (ignored with a note otherwise) and TLS interception:
+    `oc` refuses `-no-inspect` while the variable is set.
+- **OpenRouter models:** with `OC_OPENROUTER_API_KEY` set, the sandbox can use
+  OpenRouter models alongside the local llama-server, without the key ever being
+  inside it. Local llama stays the default (`-model` is unchanged); switch to
+  an OpenRouter model inside opencode, which ships `openrouter` as a built-in
+  provider. Unset, nothing changes: no extra provider, no extra policy entry.
+  - *Mechanism:* the same as the GitHub token. `oc` reads and unsets the
+    variable, sends the key to the proxy on stdin, and gives the sandbox only
+    `OPENROUTER_API_KEY=<placeholder>`. The proxy swaps the placeholder for the
+    key in the `Authorization` header, only at `openrouter.ai:443`. That host is
+    added to the proxy's policy (so it is decrypted and logged) only when the
+    key is set. Streaming completions pass through. `oc` prints which
+    credential providers are active at startup.
+  - *Curating models:* add `provider.openrouter.models` to your host
+    `opencode.jsonc`; the sandbox config starts from it.
+  - *Scope:* the key is protected from theft, not from use: an agent in the
+    sandbox can make OpenRouter calls through the proxy. **Use a dedicated key
+    with a low credit limit.**
+  - *Privacy:* prompts and code context leave your machine whenever an
+    OpenRouter model is used. The proxy log shows requests by host.
   - Requires `-sandbox` (ignored with a note otherwise) and TLS interception:
     `oc` refuses `-no-inspect` while the variable is set.
 - Session data inside the container is discarded on exit (`--rm`).
