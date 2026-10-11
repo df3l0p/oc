@@ -572,3 +572,21 @@ func TestSandboxRunSendsTheOpenRouterKeyOnStdinNotArgv(t *testing.T) {
 		}
 	}
 }
+
+func TestConfigureDropsALiteralOpenRouterKeyFromTheHostConfig(t *testing.T) {
+	host := filepath.Join(t.TempDir(), "opencode.jsonc")
+	if err := os.WriteFile(host, []byte(`{"provider":{"openrouter":{"options":{"apiKey":"sk-or-REAL"}}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for key, wantGone := range map[string]bool{"sk-or-SECRET": true, "": false} {
+		s := newSandbox(Options{Sandbox: true, OpenRouterKey: key}, host)
+		if err := s.Configure("llama-cpp", "http://127.0.0.1:8080", []string{"m"}); err != nil {
+			t.Fatal(err)
+		}
+		b, _ := os.ReadFile(s.generated)
+		os.Remove(s.generated)
+		if gone := !strings.Contains(string(b), "sk-or-REAL"); gone != wantGone {
+			t.Errorf("key %q: literal key removed = %v, want %v", key, gone, wantGone)
+		}
+	}
+}

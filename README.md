@@ -213,7 +213,10 @@ opencode).
     key is set. Streaming completions pass through. `oc` prints which
     credential providers are active at startup.
   - *Curating models:* add `provider.openrouter.models` to your host
-    `opencode.jsonc`; the sandbox config starts from it.
+    `opencode.jsonc`; the sandbox config starts from it. Keep keys out of that
+    file: with `OC_OPENROUTER_API_KEY` set, `oc` removes a literal
+    `provider.openrouter.options.apiKey` from the sandbox's copy (with a
+    warning), because it would override the placeholder.
   - *Scope:* the key is protected from theft, not from use: an agent in the
     sandbox can make OpenRouter calls through the proxy. **Use a dedicated key
     with a low credit limit.**

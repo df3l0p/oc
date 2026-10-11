@@ -261,6 +261,17 @@ func (s *Sandbox) Configure(providerKey, baseURL string, modelIDs []string) erro
 	if err != nil {
 		return err
 	}
+	// A literal key in the host's openrouter block would reach the container
+	// and override the placeholder, so the proxy would never be involved.
+	if s.openrouterKey != "" {
+		var dropped bool
+		if out, dropped, err = opencodeconfig.DropProviderOption(out, "openrouter", "apiKey"); err != nil {
+			return err
+		}
+		if dropped {
+			fmt.Fprintln(os.Stderr, "oc: warning: removed provider.openrouter.options.apiKey from the sandbox's copy of your opencode config; the proxy injects OC_OPENROUTER_API_KEY instead")
+		}
+	}
 	// CreateTemp creates the file 0600; the container runs as the same uid.
 	f, err := os.CreateTemp("", "oc-sandbox-config-*.jsonc")
 	if err != nil {
