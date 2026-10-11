@@ -72,6 +72,25 @@ func ReadProviders(r *bufio.Reader) ([]Provider, error) {
 	return ps, nil
 }
 
+// InjectorFromStdin reads the provider config from r (see ReadProviders) and
+// returns the Injector for it, logging to logf. Every host a provider is bound
+// to must be listed explicitly in pol: only explicit hosts are decrypted, so a
+// credential could never be injected at any other.
+func InjectorFromStdin(r *bufio.Reader, pol Policy, logf func(string, ...any)) (*Injector, error) {
+	providers, err := ReadProviders(r)
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range providers {
+		for _, h := range p.Hosts() {
+			if !pol.Explicit(h) {
+				return nil, fmt.Errorf("provider %s is bound to %s, which the policy doesn't list explicitly, so it would never be decrypted", p.Name(), h)
+			}
+		}
+	}
+	return &Injector{Providers: providers, Logf: logf}, nil
+}
+
 // BuildProvider turns a config entry into its Provider; only "github" exists.
 func BuildProvider(c ProviderConfig) (Provider, error) {
 	switch c.Name {

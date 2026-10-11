@@ -49,19 +49,14 @@ func main() {
 		fmt.Printf("oc-proxy: intercepting %v; trust bundle written to %s\n", pol.DNSHosts(), *caOut)
 		srv.CA = ca
 		if *providersStdin {
-			providers, err := proxy.ReadProviders(bufio.NewReader(os.Stdin))
+			inj, err := proxy.InjectorFromStdin(bufio.NewReader(os.Stdin), pol, log.Printf)
 			if err != nil {
 				log.Fatalf("oc-proxy: %v", err)
 			}
-			for _, p := range providers {
-				for _, h := range p.Hosts() {
-					if !pol.Explicit(h) {
-						log.Fatalf("oc-proxy: provider %s is bound to %s, which the policy doesn't list explicitly, so it would never be decrypted", p.Name(), h)
-					}
-				}
+			for _, p := range inj.Providers {
 				fmt.Printf("oc-proxy: provider %s will be injected at %v\n", p.Name(), p.Hosts())
 			}
-			srv.OnRequest = (&proxy.Injector{Providers: providers, Logf: log.Printf}).OnRequest
+			srv.OnRequest = inj.OnRequest
 		}
 	}
 

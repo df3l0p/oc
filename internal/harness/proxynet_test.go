@@ -496,3 +496,20 @@ func TestStartProxyNetRefusesProvidersWithoutInspect(t *testing.T) {
 		t.Fatal("want an error: credentials can't be injected without decrypting")
 	}
 }
+
+// If docker attach fails, the proxy would wait on stdin for ever: oc has to say
+// so as soon as it knows, not after the readiness timeout.
+func TestStartProxyNetFailsFastWhenAttachFails(t *testing.T) {
+	fakeDockerOutput(t, map[string]int{"attach": 1}, map[string]string{"logs": "", "inspect": "true"})
+	t.Setenv("TMPDIR", t.TempDir())
+	line, _ := proxy.EncodeProviders([]proxy.ProviderConfig{{Name: "github", Token: "github_pat_x", Placeholder: "oc_placeholder_1"}})
+
+	start := time.Now()
+	_, err := startProxyNet("oc-proxy:test", "172.17.0.1", nil, true, line)
+	if err == nil || !strings.Contains(err.Error(), "attach") {
+		t.Fatalf("err = %v, want one naming docker attach", err)
+	}
+	if took := time.Since(start); took > proxyReadyTimeout/2 {
+		t.Errorf("took %s to notice a failed attach (timeout %s)", took, proxyReadyTimeout)
+	}
+}

@@ -97,3 +97,14 @@ func TestUsageDocumentsTheGitHubTokenAndTheGhShortcut(t *testing.T) {
 		}
 	}
 }
+
+func TestTokenWarningFlagsAnythingButAFineGrainedToken(t *testing.T) {
+	for _, tok := range []string{"ghp_abc", "gho_abc", "ghu_abc", "ghs_abc", "v1.0123456789abcdef"} {
+		if tokenWarning(tok) == "" {
+			t.Errorf("tokenWarning(%q) is empty, want a warning", tok)
+		}
+	}
+	if w := tokenWarning("github_pat_abc"); w != "" {
+		t.Errorf("tokenWarning(fine-grained) = %q, want none", w)
+	}
+}

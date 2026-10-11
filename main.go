@@ -82,6 +82,16 @@ func usage(w io.Writer) {
 	fmt.Fprint(w, envHelp)
 }
 
+// tokenWarning is the warning for a token that isn't a fine-grained personal
+// access token ("github_pat_…"), or "" for one that is. Classic tokens and the
+// OAuth token `gh auth token` returns can't be limited to specific repositories.
+func tokenWarning(token string) string {
+	if strings.HasPrefix(token, "github_pat_") {
+		return ""
+	}
+	return "OC_GITHUB_TOKEN isn't a fine-grained token (github_pat_…), so it can't be limited to specific repositories; a fine-grained token is safer"
+}
+
 // githubTokenFromEnv returns OC_GITHUB_TOKEN and removes it from oc's
 // environment, so nothing oc starts afterwards (docker, llama-server) inherits it.
 func githubTokenFromEnv() string {
@@ -153,8 +163,8 @@ func run() error {
 	}
 	if cfg.githubToken != "" {
 		fmt.Fprintln(os.Stderr, "oc: GitHub token: the sandbox proxy injects it at github.com and api.github.com; the sandbox only holds a placeholder (use a fine-grained token scoped to what the agent needs)")
-		if strings.HasPrefix(cfg.githubToken, "ghp_") {
-			fmt.Fprintln(os.Stderr, "oc: warning: OC_GITHUB_TOKEN looks like a classic token, which can't be limited to specific repositories; a fine-grained token is safer")
+		if w := tokenWarning(cfg.githubToken); w != "" {
+			fmt.Fprintln(os.Stderr, "oc: warning:", w)
 		}
 	}
 	if err := h.Available(); err != nil {

@@ -486,3 +486,41 @@ func TestProviderConfigCarriesTheTokenAndPlaceholder(t *testing.T) {
 		t.Errorf("no token must mean no provider config, got %q", b)
 	}
 }
+
+// The proxy swaps the placeholder it was given for the token; the sandbox has to
+// hold that same placeholder, or injection silently never happens.
+func TestSandboxRunGivesTheProxyAndTheSandboxTheSamePlaceholder(t *testing.T) {
+	logPath := fakeDockerProxy(t, nil, nil)
+	t.Setenv("TMPDIR", t.TempDir())
+	s := newSandbox(Options{Sandbox: true, GitHubToken: "github_pat_SECRET"}, filepath.Join(t.TempDir(), "absent.jsonc"))
+	if err := s.Configure("llama-cpp", "http://127.0.0.1:8080", []string{"m"}); err != nil {
+		t.Fatal(err)
+	}
+	s.image, s.proxyImage = "oc-sandbox-default:test", "oc-sandbox-proxy:test"
+	if err := s.Run(t.TempDir(), "llama-cpp", "m"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	var cfg struct {
+		Providers []struct{ Name, Token, Placeholder string }
+	}
+	if err := json.Unmarshal([]byte(attachedStdin(t, logPath)), &cfg); err != nil || len(cfg.Providers) != 1 {
+		t.Fatalf("the proxy's stdin config = %v, %v", cfg, err)
+	}
+	if cfg.Providers[0].Token != "github_pat_SECRET" || cfg.Providers[0].Placeholder == "" {
+		t.Fatalf("proxy config = %+v", cfg.Providers[0])
+	}
+
+	var sandboxRun string
+	for _, c := range calls(t, logPath) {
+		if strings.Contains(c, "github_pat_SECRET") {
+			t.Errorf("the token is in a docker argv: %s", c)
+		}
+		if strings.HasPrefix(c, "run --rm") {
+			sandboxRun = c
+		}
+	}
+	if want := "GH_TOKEN=" + cfg.Providers[0].Placeholder + " "; !strings.Contains(sandboxRun, want) {
+		t.Errorf("the sandbox's GH_TOKEN doesn't carry the proxy's placeholder (%s):\n%s", want, sandboxRun)
+	}
+}

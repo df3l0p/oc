@@ -69,3 +69,38 @@ func TestReadProvidersNamesTheDuplicate(t *testing.T) {
 		}
 	}
 }
+
+func TestInjectorFromStdinBuildsTheInjectorForExplicitHosts(t *testing.T) {
+	line, _ := EncodeProviders([]ProviderConfig{{Name: "github", Token: "github_pat_x", Placeholder: "oc_placeholder_1"}})
+	pol := NewPolicy([]string{"github.com:443", "api.github.com:443"})
+	in, err := InjectorFromStdin(bufio.NewReader(bytes.NewReader(line)), pol, nil)
+	if err != nil {
+		t.Fatalf("InjectorFromStdin: %v", err)
+	}
+	if len(in.Providers) != 1 || in.Providers[0].Name() != "github" {
+		t.Errorf("providers = %+v", in.Providers)
+	}
+}
+
+// A bound host the policy doesn't list explicitly is never decrypted, so the
+// credential could never be injected there: refuse to start.
+func TestInjectorFromStdinRefusesBoundHostsThePolicyDoesNotList(t *testing.T) {
+	line, _ := EncodeProviders([]ProviderConfig{{Name: "github", Token: "github_pat_x", Placeholder: "oc_placeholder_1"}})
+	pol := NewPolicy([]string{"github.com:443"}) // no api.github.com
+	_, err := InjectorFromStdin(bufio.NewReader(bytes.NewReader(line)), pol, nil)
+	if err == nil || !strings.Contains(err.Error(), "api.github.com:443") {
+		t.Errorf("err = %v, want one naming api.github.com:443", err)
+	}
+	// "*" allows the host but doesn't make it explicit.
+	any := Policy{Allow: map[string]bool{"github.com:443": true}, AnyPublic: true}
+	if _, err := InjectorFromStdin(bufio.NewReader(bytes.NewReader(line)), any, nil); err == nil {
+		t.Error("a host allowed only by * must not count as explicit")
+	}
+}
+
+func TestInjectorFromStdinPassesTheReadErrors(t *testing.T) {
+	_, err := InjectorFromStdin(bufio.NewReader(strings.NewReader("nope\n")), NewPolicy(nil), nil)
+	if err == nil {
+		t.Error("want an error for unreadable config")
+	}
+}

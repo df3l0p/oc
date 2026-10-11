@@ -47,8 +47,10 @@ type proxyNet struct {
 	logFollower *exec.Cmd
 	followDone  chan struct{}
 	// attach is the `docker attach` delivering the provider config on the proxy
-	// container's stdin; nil when there is none.
-	attach *exec.Cmd
+	// container's stdin; nil when there is none. attachDone receives its exit
+	// error (nil for a clean exit) once it has ended.
+	attach     *exec.Cmd
+	attachDone chan error
 }
 
 // proxyCAMount is where the proxy container mounts caVolume. It must be the
@@ -147,7 +149,8 @@ func startProxyNet(image, hostIP string, policy []byte, inspect bool, providers 
 			return nil, fmt.Errorf("attaching to the proxy container: %w", err)
 		}
 		p.attach = cmd
-		go cmd.Wait()
+		p.attachDone = make(chan error, 1)
+		go func() { p.attachDone <- cmd.Wait() }()
 	}
 
 	if out, err := exec.Command("docker", "network", "connect", p.network, p.container).CombinedOutput(); err != nil {
@@ -196,6 +199,15 @@ func (p *proxyNet) followLogs(id string) {
 func (p *proxyNet) waitReady() error {
 	deadline := time.Now().Add(proxyReadyTimeout)
 	for {
+		// A failed attach leaves the proxy waiting on its stdin for ever: say so
+		// now, not when the timeout runs out.
+		select {
+		case err := <-p.attachDone:
+			if err != nil {
+				return fmt.Errorf("docker attach to the proxy container failed (it never received its provider config): %w", err)
+			}
+		default:
+		}
 		logs, _ := exec.Command("docker", "logs", p.container).CombinedOutput()
 		if strings.Contains(string(logs), proxyReadyLine) {
 			return nil
