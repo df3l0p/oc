@@ -140,10 +140,8 @@ opencode).
   each session gets its own proxy container on a private network between the
   two, and all of the sandbox's HTTP(S) traffic is forced through it via
   `HTTP_PROXY`/`HTTPS_PROXY`. The proxy only allows the session's model
-  server plus `registry.npmjs.org`, `github.com`, `api.github.com`,
-  `codeload.github.com`, `raw.githubusercontent.com`,
-  `objects.githubusercontent.com` and `models.dev` (the
-  latter ones over https) and blocks everything else, including non-HTTP
+  server plus `registry.npmjs.org`, `github.com`, `api.github.com` and
+  `models.dev` (all over https) and blocks everything else, including non-HTTP
   protocols such as git over ssh. Those defaults live in
   `internal/harness/policy.txt` (one `host:port` per line), built into `oc`.
   `-all-net` opens the sandbox up to any public host over http(s) instead;

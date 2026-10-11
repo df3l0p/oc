@@ -181,11 +181,16 @@ func TestDefaultPolicyParses(t *testing.T) {
 	}
 	for _, want := range []string{
 		"registry.npmjs.org:443", "github.com:443", "models.dev:443",
-		"api.github.com:443", "codeload.github.com:443",
-		"raw.githubusercontent.com:443", "objects.githubusercontent.com:443",
+		"api.github.com:443",
 	} {
 		if !pol.Allows(want) {
 			t.Errorf("default policy doesn't allow %s", want)
+		}
+	}
+	// Not needed by git or gh through the provider; kept out until something is.
+	for _, not := range []string{"codeload.github.com:443", "raw.githubusercontent.com:443", "objects.githubusercontent.com:443"} {
+		if pol.Allows(not) {
+			t.Errorf("default policy allows %s", not)
 		}
 	}
 }

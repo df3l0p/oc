@@ -5,11 +5,8 @@
 
 # npm packages
 registry.npmjs.org:443
-# GitHub: git over https, the API that gh uses, and downloads
+# GitHub: git over https, and the API that gh uses
 github.com:443
 api.github.com:443
-codeload.github.com:443
-raw.githubusercontent.com:443
-objects.githubusercontent.com:443
 # the model catalog opencode fetches at startup
 models.dev:443
