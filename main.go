@@ -45,6 +45,8 @@ type cliConfig struct {
 	// githubToken is OC_GITHUB_TOKEN, read (and unset) at startup; empty means
 	// no GitHub credentials. It is only kept with -sandbox.
 	githubToken string
+	// openrouterKey is OC_OPENROUTER_API_KEY, handled like githubToken.
+	openrouterKey string
 }
 
 const defaultHost = "127.0.0.1"
@@ -60,6 +62,14 @@ func (c cliConfig) validate() error {
 		}
 		if c.noInspect {
 			return fmt.Errorf("OC_GITHUB_TOKEN is set, but -no-inspect stops the proxy from decrypting HTTPS, so it couldn't inject the token; unset one of them")
+		}
+	}
+	if c.openrouterKey != "" {
+		if err := proxy.ValidateToken(c.openrouterKey); err != nil {
+			return fmt.Errorf("OC_OPENROUTER_API_KEY is unusable: %w", err)
+		}
+		if c.noInspect {
+			return fmt.Errorf("OC_OPENROUTER_API_KEY is set, but -no-inspect stops the proxy from decrypting HTTPS, so it couldn't inject the key; unset one of them")
 		}
 	}
 	return nil
@@ -87,6 +97,13 @@ Environment:
                     To reuse your logged-in gh account instead (broad scopes: the
                     agent can do anything your account can):
                         export OC_GITHUB_TOKEN=$(gh auth token)
+  OC_OPENROUTER_API_KEY
+                    OpenRouter API key the sandbox's proxy injects at openrouter.ai
+                    (requires -sandbox). The sandbox only ever holds a placeholder,
+                    but an agent in it can still make OpenRouter calls, so use a
+                    dedicated key with a low credit limit. Local llama stays the
+                    default; switch to an openrouter model inside opencode. Prompts
+                    and code context leave your machine when you do.
 `
 
 // usage is flag.Usage: the flag defaults followed by the environment.
@@ -107,17 +124,20 @@ func tokenWarning(token string) string {
 	return "OC_GITHUB_TOKEN isn't a fine-grained token (github_pat_…), so it can't be limited to specific repositories; a fine-grained token is safer"
 }
 
-// setGitHubToken keeps tok only when a session will use it: it needs a sandbox,
-// and -sandbox-update exits before one starts.
-func (c *cliConfig) setGitHubToken(tok string) {
-	c.githubToken = tok
-	if tok != "" && !c.sandbox {
-		fmt.Fprintln(os.Stderr, "oc: note: OC_GITHUB_TOKEN is ignored without -sandbox")
-		c.githubToken = ""
-	} else if tok != "" && c.sandboxUpdate {
-		fmt.Fprintln(os.Stderr, "oc: note: OC_GITHUB_TOKEN is ignored with -sandbox-update (no session runs)")
-		c.githubToken = ""
+// sessionCredential returns val only when a session will use it: it needs a
+// sandbox, and -sandbox-update exits before one starts. env names the variable
+// in the note printed when it is dropped.
+func (c cliConfig) sessionCredential(env, val string) string {
+	switch {
+	case val == "":
+	case !c.sandbox:
+		fmt.Fprintf(os.Stderr, "oc: note: %s is ignored without -sandbox\n", env)
+	case c.sandboxUpdate:
+		fmt.Fprintf(os.Stderr, "oc: note: %s is ignored with -sandbox-update (no session runs)\n", env)
+	default:
+		return val
 	}
+	return ""
 }
 
 // githubTokenFromEnv returns OC_GITHUB_TOKEN and removes it from oc's
@@ -126,6 +146,27 @@ func githubTokenFromEnv() string {
 	tok := os.Getenv("OC_GITHUB_TOKEN")
 	os.Unsetenv("OC_GITHUB_TOKEN")
 	return tok
+}
+
+// openRouterKeyFromEnv returns OC_OPENROUTER_API_KEY and removes it from oc's
+// environment, like githubTokenFromEnv.
+func openRouterKeyFromEnv() string {
+	key := os.Getenv("OC_OPENROUTER_API_KEY")
+	os.Unsetenv("OC_OPENROUTER_API_KEY")
+	return key
+}
+
+// activeProviders names the credential providers a session will use, for the
+// startup line.
+func activeProviders(c cliConfig) []string {
+	var names []string
+	if c.githubToken != "" {
+		names = append(names, "github")
+	}
+	if c.openrouterKey != "" {
+		names = append(names, "openrouter")
+	}
+	return names
 }
 
 // listenHost is the address llama-server listens on, and that oc itself uses
@@ -166,7 +207,8 @@ func parseFlags() (cliConfig, error) {
 		}
 	})
 	cfg.applyImplications()
-	cfg.setGitHubToken(githubTokenFromEnv())
+	cfg.githubToken = cfg.sessionCredential("OC_GITHUB_TOKEN", githubTokenFromEnv())
+	cfg.openrouterKey = cfg.sessionCredential("OC_OPENROUTER_API_KEY", openRouterKeyFromEnv())
 	return cfg, cfg.validate()
 }
 
@@ -183,7 +225,7 @@ func run() error {
 		return err
 	}
 
-	h, err := harness.New(cfg.harness, harness.Options{Sandbox: cfg.sandbox, Image: cfg.image, Build: cfg.build, AllNet: cfg.allNet, NoInspect: cfg.noInspect, GitHubToken: cfg.githubToken})
+	h, err := harness.New(cfg.harness, harness.Options{Sandbox: cfg.sandbox, Image: cfg.image, Build: cfg.build, AllNet: cfg.allNet, NoInspect: cfg.noInspect, GitHubToken: cfg.githubToken, OpenRouterKey: cfg.openrouterKey})
 	if err != nil {
 		return err
 	}
@@ -192,6 +234,12 @@ func run() error {
 		if w := tokenWarning(cfg.githubToken); w != "" {
 			fmt.Fprintln(os.Stderr, "oc: warning:", w)
 		}
+	}
+	if cfg.openrouterKey != "" {
+		fmt.Fprintln(os.Stderr, "oc: OpenRouter key: the sandbox proxy injects it at openrouter.ai; the sandbox only holds a placeholder (use a dedicated key with a low credit limit). Prompts leave your machine when you pick an openrouter model.")
+	}
+	if names := activeProviders(cfg); len(names) > 0 {
+		fmt.Fprintln(os.Stderr, "oc: credential providers:", strings.Join(names, ", "))
 	}
 	if err := h.Available(); err != nil {
 		return err

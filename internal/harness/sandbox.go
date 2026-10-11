@@ -84,6 +84,9 @@ type Sandbox struct {
 	// container never sees it. githubPlaceholder stands in for it there.
 	githubToken       string
 	githubPlaceholder string
+	// openrouterKey and openrouterPlaceholder are the same for OpenRouter.
+	openrouterKey         string
+	openrouterPlaceholder string
 }
 
 // hostOS is runtime.GOOS, replaceable in tests.
@@ -110,7 +113,7 @@ func newSandbox(opts Options, hostConfig string) *Sandbox {
 	if name == "" {
 		name = images.Default
 	}
-	return &Sandbox{name: name, build: opts.Build, allNet: opts.AllNet, inspect: !opts.NoInspect, githubToken: opts.GitHubToken, hostConfig: hostConfig, hostIP: "host-gateway"}
+	return &Sandbox{name: name, build: opts.Build, allNet: opts.AllNet, inspect: !opts.NoInspect, githubToken: opts.GitHubToken, openrouterKey: opts.OpenRouterKey, hostConfig: hostConfig, hostIP: "host-gateway"}
 }
 
 // BindHost returns the address llama-server should listen on so the container
@@ -274,6 +277,17 @@ func (s *Sandbox) Configure(providerKey, baseURL string, modelIDs []string) erro
 	if err != nil {
 		return err
 	}
+	// A literal key in the host's openrouter block would reach the container
+	// and override the placeholder, so the proxy would never be involved.
+	if s.openrouterKey != "" {
+		var dropped bool
+		if out, dropped, err = opencodeconfig.DropProviderOption(out, "openrouter", "apiKey"); err != nil {
+			return err
+		}
+		if dropped {
+			fmt.Fprintln(os.Stderr, "oc: warning: removed provider.openrouter.options.apiKey from the sandbox's copy of your opencode config; the proxy injects OC_OPENROUTER_API_KEY instead")
+		}
+	}
 	// CreateTemp creates the file 0600; the container runs as the same uid.
 	f, err := os.CreateTemp("", "oc-sandbox-config-*.jsonc")
 	if err != nil {
@@ -297,16 +311,23 @@ func (s *Sandbox) Run(dir, providerKey, modelID string) error {
 		return fmt.Errorf("sandbox: Prepare must be called before Run")
 	}
 
-	var providers []byte
 	if s.githubToken != "" {
 		placeholder, err := newPlaceholder()
 		if err != nil {
 			return err
 		}
 		s.githubPlaceholder = placeholder
-		if providers, err = s.providerConfig(); err != nil {
+	}
+	if s.openrouterKey != "" {
+		placeholder, err := newPlaceholder()
+		if err != nil {
 			return err
 		}
+		s.openrouterPlaceholder = placeholder
+	}
+	providers, err := s.providerConfig()
+	if err != nil {
+		return err
 	}
 	pn, err := startProxyNet(s.proxyImage, s.hostIP, s.policy(), s.inspect, providers)
 	if err != nil {
@@ -345,6 +366,9 @@ func (s *Sandbox) policy() []byte {
 	b.Write(defaultPolicy)
 	if s.modelServer != "" {
 		b.WriteString("\n# this session's llama-server\n" + s.modelServer + "\n")
+	}
+	if s.openrouterKey != "" {
+		b.WriteString("\n# OpenRouter (OC_OPENROUTER_API_KEY is set)\nopenrouter.ai:443\n")
 	}
 	if s.allNet {
 		b.WriteString("\n# -all-net: any public host\n*\n")
@@ -394,6 +418,10 @@ func (s *Sandbox) runArgs(name, dir, providerKey, modelID string, pn *proxyNet, 
 	if s.githubPlaceholder != "" {
 		args = append(args, githubEnv(s.githubPlaceholder)...)
 	}
+	if s.openrouterPlaceholder != "" {
+		// opencode's built-in openrouter provider reads its key from here.
+		args = append(args, "-e", "OPENROUTER_API_KEY="+s.openrouterPlaceholder)
+	}
 	return append(args,
 		"-w", containerWorkdir,
 		s.image,
@@ -414,10 +442,17 @@ func newPlaceholder() (string, error) {
 // providerConfig is the line of provider config for oc-proxy's stdin, or nil
 // when the session has no credentials.
 func (s *Sandbox) providerConfig() ([]byte, error) {
-	if s.githubToken == "" {
+	var cfgs []proxy.ProviderConfig
+	if s.githubToken != "" {
+		cfgs = append(cfgs, proxy.ProviderConfig{Name: "github", Token: s.githubToken, Placeholder: s.githubPlaceholder})
+	}
+	if s.openrouterKey != "" {
+		cfgs = append(cfgs, proxy.ProviderConfig{Name: "openrouter", Token: s.openrouterKey, Placeholder: s.openrouterPlaceholder})
+	}
+	if len(cfgs) == 0 {
 		return nil, nil
 	}
-	return proxy.EncodeProviders([]proxy.ProviderConfig{{Name: "github", Token: s.githubToken, Placeholder: s.githubPlaceholder}})
+	return proxy.EncodeProviders(cfgs)
 }
 
 // githubEnv is what makes gh and git use the placeholder: gh reads GH_TOKEN, and

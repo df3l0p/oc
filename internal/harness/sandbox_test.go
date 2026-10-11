@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -522,5 +523,70 @@ func TestSandboxRunGivesTheProxyAndTheSandboxTheSamePlaceholder(t *testing.T) {
 	}
 	if want := "GH_TOKEN=" + cfg.Providers[0].Placeholder + " "; !strings.Contains(sandboxRun, want) {
 		t.Errorf("the sandbox's GH_TOKEN doesn't carry the proxy's placeholder (%s):\n%s", want, sandboxRun)
+	}
+}
+
+func TestOpenRouterKeyIsGatedInPolicyEnvAndConfig(t *testing.T) {
+	off := newSandbox(Options{Sandbox: true}, "")
+	if strings.Contains(string(off.policy()), "openrouter") {
+		t.Errorf("policy lists openrouter without a key:\n%s", off.policy())
+	}
+	if b, _ := off.providerConfig(); b != nil {
+		t.Errorf("no key must mean no provider config, got %q", b)
+	}
+
+	s := newSandbox(Options{Sandbox: true, GitHubToken: "github_pat_SECRET", OpenRouterKey: "sk-or-SECRET"}, "")
+	s.githubPlaceholder, s.openrouterPlaceholder = "ph_gh", "ph_or"
+	s.image, s.generated = "oc-sandbox-default:x", "/tmp/cfg"
+	if !strings.Contains(string(s.policy()), "\nopenrouter.ai:443\n") {
+		t.Errorf("policy lacks openrouter.ai:443:\n%s", s.policy())
+	}
+	b, err := s.providerConfig()
+	if err != nil || bytes.Count(b, []byte("\n")) != 1 || !strings.Contains(string(b), "sk-or-SECRET") || !strings.Contains(string(b), "github_pat_SECRET") {
+		t.Errorf("one line with both providers wanted, got %q, %v", b, err)
+	}
+	pn := &proxyNet{network: "oc-net-1", container: "oc-proxy-1"}
+	joined := strings.Join(s.runArgs("oc-1-aa", "/work/proj", "llama-cpp", "m1", pn, false), " ")
+	if strings.Contains(joined, "sk-or-SECRET") || !strings.Contains(joined, "-e OPENROUTER_API_KEY=ph_or") {
+		t.Errorf("run args = %s", joined)
+	}
+}
+
+func TestSandboxRunSendsTheOpenRouterKeyOnStdinNotArgv(t *testing.T) {
+	logPath := fakeDockerProxy(t, nil, nil)
+	t.Setenv("TMPDIR", t.TempDir())
+	s := newSandbox(Options{Sandbox: true, OpenRouterKey: "sk-or-SECRET"}, filepath.Join(t.TempDir(), "absent.jsonc"))
+	if err := s.Configure("llama-cpp", "http://127.0.0.1:8080", []string{"m"}); err != nil {
+		t.Fatal(err)
+	}
+	s.image, s.proxyImage = "oc-sandbox-default:test", "oc-sandbox-proxy:test"
+	if err := s.Run(t.TempDir(), "llama-cpp", "m"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !strings.Contains(attachedStdin(t, logPath), "sk-or-SECRET") {
+		t.Errorf("the key never reached the proxy's stdin")
+	}
+	for _, c := range calls(t, logPath) {
+		if strings.Contains(c, "sk-or-SECRET") {
+			t.Errorf("the key is in a docker argv: %s", c)
+		}
+	}
+}
+
+func TestConfigureDropsALiteralOpenRouterKeyFromTheHostConfig(t *testing.T) {
+	host := filepath.Join(t.TempDir(), "opencode.jsonc")
+	if err := os.WriteFile(host, []byte(`{"provider":{"openrouter":{"options":{"apiKey":"sk-or-REAL"}}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for key, wantGone := range map[string]bool{"sk-or-SECRET": true, "": false} {
+		s := newSandbox(Options{Sandbox: true, OpenRouterKey: key}, host)
+		if err := s.Configure("llama-cpp", "http://127.0.0.1:8080", []string{"m"}); err != nil {
+			t.Fatal(err)
+		}
+		b, _ := os.ReadFile(s.generated)
+		os.Remove(s.generated)
+		if gone := !strings.Contains(string(b), "sk-or-REAL"); gone != wantGone {
+			t.Errorf("key %q: literal key removed = %v, want %v", key, gone, wantGone)
+		}
 	}
 }

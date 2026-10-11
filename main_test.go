@@ -128,10 +128,10 @@ func TestTokenWarningFlagsAnythingButAFineGrainedToken(t *testing.T) {
 	}
 }
 
-// TestSetGitHubTokenIsKeptOnlyForASession checks that the token is dropped when
-// no session will use it: without -sandbox, and with -sandbox-update, which
-// exits before one starts.
-func TestSetGitHubTokenIsKeptOnlyForASession(t *testing.T) {
+// TestSessionCredentialIsKeptOnlyForASession checks that a credential is
+// dropped when no session will use it: without -sandbox, and with
+// -sandbox-update, which exits before one starts.
+func TestSessionCredentialIsKeptOnlyForASession(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		cfg  cliConfig
@@ -141,9 +141,52 @@ func TestSetGitHubTokenIsKeptOnlyForASession(t *testing.T) {
 		{"sandbox", cliConfig{sandbox: true}, "tok"},
 		{"sandbox-update", cliConfig{sandbox: true, sandboxUpdate: true}, ""},
 	} {
-		tc.cfg.setGitHubToken("tok")
-		if tc.cfg.githubToken != tc.want {
-			t.Errorf("%s: githubToken = %q, want %q", tc.name, tc.cfg.githubToken, tc.want)
+		if got := tc.cfg.sessionCredential("OC_X", "tok"); got != tc.want {
+			t.Errorf("%s: credential = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestOpenRouterKeyFromEnvReadsAndUnsets(t *testing.T) {
+	t.Setenv("OC_OPENROUTER_API_KEY", "sk-or-x")
+	if got := openRouterKeyFromEnv(); got != "sk-or-x" {
+		t.Errorf("got %q", got)
+	}
+	if v, ok := os.LookupEnv("OC_OPENROUTER_API_KEY"); ok {
+		t.Errorf("OC_OPENROUTER_API_KEY is still set (%q): child processes would inherit it", v)
+	}
+}
+
+func TestValidateRejectsAnOpenRouterKeyWithNoInspect(t *testing.T) {
+	err := cliConfig{sandbox: true, noInspect: true, openrouterKey: "sk-or-x"}.validate()
+	if err == nil || !strings.Contains(err.Error(), "OC_OPENROUTER_API_KEY") {
+		t.Errorf("err = %v", err)
+	}
+}
+
+func TestValidateRejectsAnUnusableOpenRouterKey(t *testing.T) {
+	err := cliConfig{sandbox: true, openrouterKey: "sk-or-x\n"}.validate()
+	if err == nil || !strings.Contains(err.Error(), "OC_OPENROUTER_API_KEY") || strings.Contains(err.Error(), "sk-or-x") {
+		t.Errorf("err = %v, want one naming OC_OPENROUTER_API_KEY and not echoing it", err)
+	}
+}
+
+func TestActiveProvidersListsOnlyTheSetOnes(t *testing.T) {
+	if got := activeProviders(cliConfig{}); len(got) != 0 {
+		t.Errorf("none set: %v", got)
+	}
+	got := activeProviders(cliConfig{githubToken: "a", openrouterKey: "b"})
+	if strings.Join(got, ",") != "github,openrouter" {
+		t.Errorf("both set: %v", got)
+	}
+}
+
+func TestUsageDocumentsTheOpenRouterKey(t *testing.T) {
+	var buf bytes.Buffer
+	usage(&buf)
+	for _, want := range []string{"OC_OPENROUTER_API_KEY", "credit limit", "-sandbox"} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("usage is missing %q:\n%s", want, buf.String())
 		}
 	}
 }
