@@ -187,12 +187,10 @@ opencode).
   - *What the sandbox gets:* `GH_TOKEN` set to a random per-session placeholder
     and a git credential helper that answers with it. The proxy replaces the
     placeholder in the `Authorization` header (Bearer, token or Basic) and only
-    for those two hosts. On decrypted HTTPS requests the placeholder anywhere
-    else (path, query, other headers, a second `Authorization` value), or sent
-    to any other decrypted host, is refused with a 403 and not forwarded. Request
-    bodies aren't inspected, and plain-http requests and tunnelled hosts (those
-    opened only by `-all-net`) are never checked; a placeholder is worthless
-    outside the session's proxy, so the worst case is that it is seen upstream.
+    for those two hosts. That is the only place the token is ever written: a
+    placeholder anywhere else (path, query, other headers, bodies), or sent to
+    any other host, is left as it is, so the upstream rejects it. A placeholder
+    is worthless outside the session's proxy.
   - *How the token reaches the proxy:* `oc` reads `OC_GITHUB_TOKEN`, unsets it,
     and sends it to the proxy container on its stdin: never as an argument or
     environment variable (those show in `docker inspect`), never on disk. The

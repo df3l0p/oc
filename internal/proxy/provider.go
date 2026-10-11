@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"strings"
 	"unicode"
 )
@@ -101,28 +100,15 @@ func (in *Injector) logf(format string, args ...any) {
 	}
 }
 
-// OnRequest implements Server.OnRequest. For each provider:
-//   - target not bound to it: a request carrying its placeholder anywhere is
-//     refused (the credential is never valid there);
-//   - target bound to it: the placeholder is replaced in the Authorization
-//     header; one anywhere else is refused;
-//   - no placeholder: the request is left untouched.
+// OnRequest implements Server.OnRequest. At a host a provider is bound to, it
+// replaces the provider's placeholder in the request's Authorization header
+// with the credential. That is the only place a credential is ever written: a
+// placeholder anywhere else, or at any other host, is left as it is and so
+// stays inert (the upstream just rejects it).
 func (in *Injector) OnRequest(r *http.Request, target string) error {
+	auth := r.Header.Get("Authorization")
 	for _, p := range in.Providers {
-		ph := p.Placeholder()
-		if !bound(p, target) {
-			if carries(r, ph, true) {
-				in.logf("oc-proxy: provider %s: its placeholder was sent to %s, which it isn't bound to; refused", p.Name(), target)
-				return fmt.Errorf("the %s credential isn't valid at %s", p.Name(), target)
-			}
-			continue
-		}
-		if carries(r, ph, false) {
-			in.logf("oc-proxy: provider %s: its placeholder was sent outside the Authorization header to %s; refused", p.Name(), target)
-			return fmt.Errorf("the %s credential may only be sent in the Authorization header", p.Name())
-		}
-		auth := r.Header.Get("Authorization")
-		if !authCarries(auth, ph) {
+		if !bound(p, target) || !authCarries(auth, p.Placeholder()) {
 			continue
 		}
 		secret, err := p.Credential(r.Context())
@@ -130,7 +116,8 @@ func (in *Injector) OnRequest(r *http.Request, target string) error {
 			in.logf("oc-proxy: provider %s: credential unavailable for %s", p.Name(), target)
 			return &CredentialError{Provider: p.Name(), Err: err}
 		}
-		r.Header.Set("Authorization", substitute(auth, ph, secret))
+		auth = substitute(auth, p.Placeholder(), secret)
+		r.Header.Set("Authorization", auth)
 		in.logf("oc-proxy: provider %s: credential injected for %s", p.Name(), target)
 	}
 	return nil
@@ -140,38 +127,6 @@ func bound(p Provider, target string) bool {
 	for _, h := range p.Hosts() {
 		if strings.EqualFold(h, target) {
 			return true
-		}
-	}
-	return false
-}
-
-// carries reports whether the placeholder appears in the request's path,
-// query (also percent-decoded) or headers. For the Authorization header it
-// looks at every value with includeAuth, and otherwise only at the values after
-// the first: the first is the one an Injector substitutes in.
-func carries(r *http.Request, ph string, includeAuth bool) bool {
-	if strings.Contains(r.URL.EscapedPath(), ph) || strings.Contains(r.URL.Path, ph) || strings.Contains(r.URL.RawQuery, ph) {
-		return true
-	}
-	if q, err := url.QueryUnescape(r.URL.RawQuery); err == nil && strings.Contains(q, ph) {
-		return true
-	}
-	for k, vs := range r.Header {
-		if k == "Authorization" {
-			if !includeAuth && len(vs) > 0 {
-				vs = vs[1:]
-			}
-			for _, v := range vs {
-				if authCarries(v, ph) {
-					return true
-				}
-			}
-			continue
-		}
-		for _, v := range vs {
-			if strings.Contains(v, ph) {
-				return true
-			}
 		}
 	}
 	return false

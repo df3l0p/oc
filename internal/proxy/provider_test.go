@@ -83,34 +83,44 @@ func TestInjectorLeavesRequestsWithoutThePlaceholderAlone(t *testing.T) {
 	}
 }
 
-func TestInjectorRefusesThePlaceholderOutsideTheAuthorizationHeader(t *testing.T) {
-	in, _ := newTestInjector(t, "api.github.com:443")
-	cases := map[string]*http.Request{
-		"query":  newReq("https://api.github.com/user?access_token="+testPlaceholder, ""),
-		"path":   newReq("https://api.github.com/"+testPlaceholder, ""),
-		"header": newReq("https://api.github.com/user", ""),
-	}
-	cases["header"].Header.Set("X-Other", testPlaceholder)
-	for name, r := range cases {
-		if err := in.OnRequest(r, "api.github.com:443"); err == nil {
-			t.Errorf("%s: want the request refused", name)
-		}
-	}
-}
+// The placeholder is only ever replaced in the first Authorization value at a
+// bound host. Anywhere else it is inert: nothing is substituted, so the real
+// token can't end up there.
+func TestInjectorOnlySubstitutesInTheAuthorizationHeaderAtBoundHosts(t *testing.T) {
+	in, audit := newTestInjector(t, "api.github.com:443")
 
-func TestInjectorRefusesThePlaceholderAtAnUnboundHost(t *testing.T) {
-	in, _ := newTestInjector(t, "api.github.com:443")
+	elsewhere := newReq("https://api.github.com/"+testPlaceholder+"?access_token="+testPlaceholder, "")
+	elsewhere.Header.Set("X-Other", testPlaceholder)
+	if err := in.OnRequest(elsewhere, "api.github.com:443"); err != nil {
+		t.Fatalf("OnRequest: %v", err)
+	}
+	if elsewhere.Header.Get("X-Other") != testPlaceholder || strings.Contains(elsewhere.URL.String(), testSecret) {
+		t.Errorf("the placeholder was replaced outside Authorization: %v %v", elsewhere.Header, elsewhere.URL)
+	}
+
+	second := newReq("https://api.github.com/x", "Bearer other")
+	second.Header.Add("Authorization", "Bearer "+testPlaceholder)
+	if err := in.OnRequest(second, "api.github.com:443"); err != nil {
+		t.Fatalf("OnRequest: %v", err)
+	}
+	if got := second.Header.Values("Authorization"); len(got) != 2 || got[0] != "Bearer other" || got[1] != "Bearer "+testPlaceholder {
+		t.Errorf("only the first Authorization value may be considered, got %q", got)
+	}
+
 	for _, auth := range []string{
 		"Bearer " + testPlaceholder,
 		"Basic " + base64.StdEncoding.EncodeToString([]byte("u:"+testPlaceholder)),
 	} {
 		r := newReq("https://evil.example/steal", auth)
-		if err := in.OnRequest(r, "evil.example:443"); err == nil {
-			t.Errorf("auth %q: want the request refused", auth)
+		if err := in.OnRequest(r, "evil.example:443"); err != nil {
+			t.Fatalf("OnRequest: %v", err)
 		}
-		if strings.Contains(r.Header.Get("Authorization"), testSecret) {
-			t.Error("the secret was injected at an unbound host")
+		if got := r.Header.Get("Authorization"); got != auth {
+			t.Errorf("Authorization changed at an unbound host: %q -> %q", auth, got)
 		}
+	}
+	if s := audit.String(); s != "" {
+		t.Errorf("nothing was injected, but the injector logged: %s", s)
 	}
 }
 
@@ -128,11 +138,9 @@ func TestInjectorMatchesHostsCaseInsensitively(t *testing.T) {
 func TestInjectorLogsNeverContainTheSecretOrThePlaceholder(t *testing.T) {
 	in, audit := newTestInjector(t, "api.github.com:443")
 	in.OnRequest(newReq("https://api.github.com/user", "Bearer "+testPlaceholder), "api.github.com:443")
-	in.OnRequest(newReq("https://evil.example/x?k="+testPlaceholder, ""), "evil.example:443")
-	in.OnRequest(newReq("https://api.github.com/user?k="+testPlaceholder, ""), "api.github.com:443")
 	log := audit.String()
 	if log == "" {
-		t.Fatal("expected audit lines for the injection and the refusals")
+		t.Fatal("expected an audit line for the injection")
 	}
 	for _, bad := range []string{testSecret, testPlaceholder} {
 		if strings.Contains(log, bad) {
@@ -278,14 +286,6 @@ func TestInterceptAnswers502WhenTheCredentialIsUnavailable(t *testing.T) {
 	}
 }
 
-func TestInterceptNeverForwardsAPlaceholderInTheQuery(t *testing.T) {
-	c, hits := newInjectingProxy(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}), staticAt(t))
-	status, _ := c.do(t, "", "?k="+testPlaceholder)
-	if status != http.StatusForbidden || hits.Load() != 0 {
-		t.Errorf("status = %d, upstream hits = %d; want 403 and 0", status, hits.Load())
-	}
-}
-
 // Several providers side by side: each swaps only its own placeholder, at its
 // own hosts.
 func TestInjectorHandlesSeveralProvidersIndependently(t *testing.T) {
@@ -301,36 +301,9 @@ func TestInjectorHandlesSeveralProvidersIndependently(t *testing.T) {
 	if err := in.OnRequest(rb, "b.example:443"); err != nil || rb.Header.Get("Authorization") != "Bearer secret-b" {
 		t.Errorf("b: err=%v Authorization=%q", err, rb.Header.Get("Authorization"))
 	}
-	// a's placeholder at b's host is refused: it is only valid at a's.
+	// a's placeholder at b's host is not replaced: it is only valid at a's.
 	cross := newReq("https://b.example/x", "Bearer oc_placeholder_a")
-	if err := in.OnRequest(cross, "b.example:443"); err == nil {
-		t.Error("a's placeholder was accepted at b's host")
-	}
-}
-
-// The refusal must not be dodged by encoding the placeholder or by hiding it in
-// a second Authorization value.
-func TestInjectorRefusesEncodedAndRepeatedPlaceholders(t *testing.T) {
-	in, _ := newTestInjector(t, "api.github.com:443")
-	encoded := strings.Replace(testPlaceholder, "o", "%6F", 1)
-
-	q := newReq("https://evil.example/x?q="+encoded, "")
-	if err := in.OnRequest(q, "evil.example:443"); err == nil {
-		t.Error("a percent-encoded placeholder in the query was forwarded to an unbound host")
-	}
-	bound := newReq("https://api.github.com/x?q="+encoded, "")
-	if err := in.OnRequest(bound, "api.github.com:443"); err == nil {
-		t.Error("a percent-encoded placeholder in the query was forwarded to a bound host")
-	}
-
-	second := newReq("https://evil.example/x", "Bearer other")
-	second.Header.Add("Authorization", "Bearer "+testPlaceholder)
-	if err := in.OnRequest(second, "evil.example:443"); err == nil {
-		t.Error("a placeholder in a second Authorization value was forwarded to an unbound host")
-	}
-	secondBound := newReq("https://api.github.com/x", "Bearer other")
-	secondBound.Header.Add("Authorization", "Bearer "+testPlaceholder)
-	if err := in.OnRequest(secondBound, "api.github.com:443"); err == nil {
-		t.Error("a placeholder in a second Authorization value reached a bound host unsubstituted")
+	if err := in.OnRequest(cross, "b.example:443"); err != nil || cross.Header.Get("Authorization") != "Bearer oc_placeholder_a" {
+		t.Errorf("a's placeholder at b's host: err=%v Authorization=%q", err, cross.Header.Get("Authorization"))
 	}
 }
