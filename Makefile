@@ -1,16 +1,16 @@
-BIN ?= oc
+BIN ?= rnes
 ARGS ?=
 
 .PHONY: build
-build: ## Build the oc binary
+build: ## Build the rnes binary
 	go build -o $(BIN) .
 
 .PHONY: install
-install: ## Install oc into GOBIN
+install: ## Install rnes into GOBIN
 	go install .
 
 .PHONY: run
-run: ## Run oc from source (pass flags with ARGS="-port 9090")
+run: ## Run rnes from source (pass flags with ARGS="-port 9090")
 	go run . $(ARGS)
 
 .PHONY: test

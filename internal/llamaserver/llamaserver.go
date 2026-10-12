@@ -1,5 +1,5 @@
 // Package llamaserver starts, health-checks, and stops a llama-server
-// process, discovers the models it can serve, and tracks which oc processes
+// process, discovers the models it can serve, and tracks which rnes processes
 // are currently using a given port so a shared server is only stopped once
 // nobody needs it anymore.
 package llamaserver
@@ -62,7 +62,7 @@ func FindCommand() ([]string, error) {
 //
 // No model is passed: without -m/-hf, llama-server runs in router mode. It
 // lists every model in the local cache from /v1/models and loads one on
-// demand when a request names it, so a single server (and any number of oc
+// demand when a request names it, so a single server (and any number of rnes
 // sessions sharing it) can serve any cached model, chosen per session. Its
 // stdout/stderr are wired to the given writer
 // (typically a log file, never the shared terminal — opencode's full-screen
@@ -105,7 +105,7 @@ const gracePeriod = 10 * time.Second
 
 // Stop terminates the llama-server process group and blocks until it has
 // actually exited, escalating to SIGKILL if it doesn't shut down within
-// gracePeriod. Without waiting here, oc would return control to the shell
+// gracePeriod. Without waiting here, rnes would return control to the shell
 // while llama-server is still mid-shutdown, making it look like Stop did
 // nothing.
 func (p *Process) Stop() error {
@@ -241,13 +241,13 @@ func Download(model string, output io.Writer) error {
 	return nil
 }
 
-// registryDir is where oc processes register themselves as users of the
-// llama-server on the given port, so a shared server started by one oc
-// instance is only stopped once every oc instance using that port is gone.
+// registryDir is where rnes processes register themselves as users of the
+// llama-server on the given port, so a shared server started by one rnes
+// instance is only stopped once every rnes instance using that port is gone.
 // A directory of one file per PID needs no locking: create/remove are
 // atomic, and listing tolerates concurrent add/remove.
 func registryDir(port int) string {
-	return filepath.Join(os.TempDir(), fmt.Sprintf("oc-llama-server-%d.sessions", port))
+	return filepath.Join(os.TempDir(), fmt.Sprintf("rnes-llama-server-%d.sessions", port))
 }
 
 // Register records this process as a user of the llama-server on the given
@@ -266,11 +266,11 @@ func Register(port int) (func(), error) {
 	return func() { os.Remove(self) }, nil
 }
 
-// OtherSessionsActive reports whether any oc process other than this one is
+// OtherSessionsActive reports whether any rnes process other than this one is
 // still registered as using the llama-server on the given port. Registrations
-// whose process no longer exists (an oc that was SIGKILLed or lost its
+// whose process no longer exists (an rnes that was SIGKILLed or lost its
 // terminal never unregistered) are ignored and removed; left in place they
-// would make every later oc believe the server is still in use and never
+// would make every later rnes believe the server is still in use and never
 // stop it.
 func OtherSessionsActive(port int) bool {
 	dir := registryDir(port)
@@ -300,22 +300,22 @@ func processAlive(pid int) bool {
 	return err == nil || err == syscall.EPERM
 }
 
-// serverPIDPath is where the pid of an oc-started llama-server is recorded,
-// so that whichever oc exits last can stop it, not only the one that started
+// serverPIDPath is where the pid of an rnes-started llama-server is recorded,
+// so that whichever rnes exits last can stop it, not only the one that started
 // it. Without this, if the starter exits first (leaving the server up for
 // the others), nobody ever stops it.
 func serverPIDPath(port int) string {
-	return filepath.Join(os.TempDir(), fmt.Sprintf("oc-llama-server-%d.pid", port))
+	return filepath.Join(os.TempDir(), fmt.Sprintf("rnes-llama-server-%d.pid", port))
 }
 
-// RecordServer notes that pid is an oc-started llama-server on port.
+// RecordServer notes that pid is an rnes-started llama-server on port.
 func RecordServer(port, pid int) error {
 	return os.WriteFile(serverPIDPath(port), []byte(strconv.Itoa(pid)), 0o600)
 }
 
 // StopRecordedServer stops the server recorded by RecordServer (SIGTERM to
 // its process group, SIGKILL after gracePeriod) and clears the record. It is
-// a no-op when nothing is recorded, e.g. for a server oc didn't start. The
+// a no-op when nothing is recorded, e.g. for a server rnes didn't start. The
 // pid is checked to still belong to a llama process first, in case it exited
 // earlier and the pid was reused.
 func StopRecordedServer(port int) error {

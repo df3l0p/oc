@@ -84,5 +84,5 @@ func dialFailed(w http.ResponseWriter, target string, err error) {
 		denied(w, target+" (not a public address)")
 		return
 	}
-	http.Error(w, "oc-proxy: dial upstream: "+err.Error(), http.StatusBadGateway)
+	http.Error(w, "rnes-proxy: dial upstream: "+err.Error(), http.StatusBadGateway)
 }

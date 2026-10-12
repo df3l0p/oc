@@ -10,7 +10,7 @@ import (
 // that run a sandbox session make the proxy's log file under it, and that file
 // outlives the session by design.
 func TestMain(m *testing.M) {
-	dir, err := os.MkdirTemp("", "oc-harness-test-")
+	dir, err := os.MkdirTemp("", "rnes-harness-test-")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

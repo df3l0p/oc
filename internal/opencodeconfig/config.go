@@ -26,7 +26,7 @@ type Provider struct {
 // file are not preserved.
 //
 // The read-modify-write is guarded by an flock on a sibling ".lock" file, so
-// two oc processes racing on the same config don't silently drop one
+// two rnes processes racing on the same config don't silently drop one
 // another's changes, and the write itself goes through a temp file + rename
 // so a crash mid-write can't leave the config truncated.
 func Merge(path, providerKey string, provider Provider) error {
@@ -57,7 +57,7 @@ func Merge(path, providerKey string, provider Provider) error {
 		return fmt.Errorf("%s: %w", path, err)
 	}
 
-	tmp, err := os.CreateTemp(dir, ".oc-config-*.tmp")
+	tmp, err := os.CreateTemp(dir, ".rnes-config-*.tmp")
 	if err != nil {
 		return fmt.Errorf("creating temp file in %s: %w", dir, err)
 	}

@@ -18,65 +18,65 @@ func TestSandboxPrepare(t *testing.T) {
 			name: "base and image present locally: nothing to do",
 			opts: Options{Sandbox: true},
 			wantCalls: []string{
-				"image inspect oc-sandbox-base:",
-				"image inspect oc-sandbox-default:",
-				"image inspect oc-sandbox-proxy:",
+				"image inspect rnes-sandbox-base:",
+				"image inspect rnes-sandbox-default:",
+				"image inspect rnes-sandbox-proxy:",
 			},
-			wantImage: "oc-sandbox-default:",
+			wantImage: "rnes-sandbox-default:",
 		},
 		{
-			name: "image missing: built on the base with OC_BASE, never pulled",
+			name: "image missing: built on the base with RNES_BASE, never pulled",
 			opts: Options{Sandbox: true},
-			exit: map[string]int{"image inspect oc-sandbox-default:": 1},
+			exit: map[string]int{"image inspect rnes-sandbox-default:": 1},
 			wantCalls: []string{
-				"image inspect oc-sandbox-base:",
-				"image inspect oc-sandbox-default:",
-				"build --build-arg OC_BASE=oc-sandbox-base:",
-				"image inspect oc-sandbox-proxy:",
+				"image inspect rnes-sandbox-base:",
+				"image inspect rnes-sandbox-default:",
+				"build --build-arg RNES_BASE=rnes-sandbox-base:",
+				"image inspect rnes-sandbox-proxy:",
 			},
-			wantImage: "oc-sandbox-default:",
+			wantImage: "rnes-sandbox-default:",
 		},
 		{
 			name: "both missing: base built first, then the image",
 			opts: Options{Sandbox: true},
 			exit: map[string]int{"image inspect": 1},
 			wantCalls: []string{
-				"image inspect oc-sandbox-base:",
-				"build -t oc-sandbox-base:",
-				"image inspect oc-sandbox-default:",
-				"build --build-arg OC_BASE=oc-sandbox-base:",
-				"image inspect oc-sandbox-proxy:",
-				"build -t oc-sandbox-proxy:",
+				"image inspect rnes-sandbox-base:",
+				"build -t rnes-sandbox-base:",
+				"image inspect rnes-sandbox-default:",
+				"build --build-arg RNES_BASE=rnes-sandbox-base:",
+				"image inspect rnes-sandbox-proxy:",
+				"build -t rnes-sandbox-proxy:",
 			},
-			wantImage: "oc-sandbox-default:",
+			wantImage: "rnes-sandbox-default:",
 		},
 		{
 			name: "-build rebuilds base and image without inspecting or using the layer cache",
 			opts: Options{Sandbox: true, Build: true},
 			wantCalls: []string{
-				"build --no-cache -t oc-sandbox-base:",
-				"build --no-cache --build-arg OC_BASE=oc-sandbox-base:",
-				"build --no-cache -t oc-sandbox-proxy:",
+				"build --no-cache -t rnes-sandbox-base:",
+				"build --no-cache --build-arg RNES_BASE=rnes-sandbox-base:",
+				"build --no-cache -t rnes-sandbox-proxy:",
 			},
-			wantImage: "oc-sandbox-default:",
+			wantImage: "rnes-sandbox-default:",
 		},
 		{
 			name:      "base build failure is an error and stops there",
 			opts:      Options{Sandbox: true},
 			exit:      map[string]int{"image inspect": 1, "build": 1},
 			wantCalls: []string{"image inspect", "build"},
-			wantErr:   "building oc-sandbox-base:",
+			wantErr:   "building rnes-sandbox-base:",
 		},
 		{
 			name: "image build failure is an error",
 			opts: Options{Sandbox: true},
-			exit: map[string]int{"image inspect oc-sandbox-default:": 1, "build": 1},
+			exit: map[string]int{"image inspect rnes-sandbox-default:": 1, "build": 1},
 			wantCalls: []string{
-				"image inspect oc-sandbox-base:",
-				"image inspect oc-sandbox-default:",
+				"image inspect rnes-sandbox-base:",
+				"image inspect rnes-sandbox-default:",
 				"build",
 			},
-			wantErr: "building oc-sandbox-default:",
+			wantErr: "building rnes-sandbox-default:",
 		},
 		{
 			name:    "unknown image fails before docker is touched",
@@ -112,32 +112,32 @@ func TestSandboxPrepare(t *testing.T) {
 			if tt.wantImage != "" && !strings.HasPrefix(s.image, tt.wantImage) {
 				t.Errorf("run image = %q, want prefix %q", s.image, tt.wantImage)
 			}
-			if tt.wantErr == "" && !strings.HasPrefix(s.proxyImage, "oc-sandbox-proxy:") {
-				t.Errorf("proxyImage = %q, want prefix %q", s.proxyImage, "oc-sandbox-proxy:")
+			if tt.wantErr == "" && !strings.HasPrefix(s.proxyImage, "rnes-sandbox-proxy:") {
+				t.Errorf("proxyImage = %q, want prefix %q", s.proxyImage, "rnes-sandbox-proxy:")
 			}
 		})
 	}
 }
 
 func TestImageTag(t *testing.T) {
-	a := imageTag("default", []byte("FROM x"), "oc-sandbox-base:1")
-	if a != imageTag("default", []byte("FROM x"), "oc-sandbox-base:1") {
+	a := imageTag("default", []byte("FROM x"), "rnes-sandbox-base:1")
+	if a != imageTag("default", []byte("FROM x"), "rnes-sandbox-base:1") {
 		t.Error("tag must be stable for identical inputs")
 	}
-	if a == imageTag("default", []byte("FROM y"), "oc-sandbox-base:1") {
+	if a == imageTag("default", []byte("FROM y"), "rnes-sandbox-base:1") {
 		t.Error("tag must change with the Dockerfile content")
 	}
-	if a == imageTag("default", []byte("FROM x"), "oc-sandbox-base:2") {
+	if a == imageTag("default", []byte("FROM x"), "rnes-sandbox-base:2") {
 		t.Error("a layer's tag must change when its base's tag does")
 	}
-	if !strings.HasPrefix(a, "oc-sandbox-default:") {
-		t.Errorf("tag %q must be oc-sandbox-<name>:<hash>", a)
+	if !strings.HasPrefix(a, "rnes-sandbox-default:") {
+		t.Errorf("tag %q must be rnes-sandbox-<name>:<hash>", a)
 	}
 }
 
 func TestLayerBuildArgs(t *testing.T) {
-	got := strings.Join(layerBuildArgs("oc-sandbox-default:h", "oc-sandbox-base:b"), " ")
-	want := "build --build-arg OC_BASE=oc-sandbox-base:b -t oc-sandbox-default:h -"
+	got := strings.Join(layerBuildArgs("rnes-sandbox-default:h", "rnes-sandbox-base:b"), " ")
+	want := "build --build-arg RNES_BASE=rnes-sandbox-base:b -t rnes-sandbox-default:h -"
 	if got != want {
 		t.Errorf("args = %q, want %q", got, want)
 	}

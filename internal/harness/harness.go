@@ -1,4 +1,4 @@
-// Package harness defines the interface oc uses to point a coding agent at
+// Package harness defines the interface rnes uses to point a coding agent at
 // a local model server and run it. Opencode is the only implementation
 // today; a future agent (e.g. pi) can be added by implementing Harness and
 // registering it in registry below, without changing main's orchestration
@@ -66,9 +66,9 @@ type Options struct {
 	GitHubToken string
 }
 
-// registry maps a harness name, as accepted by oc's --harness flag, to a
+// registry maps a harness name, as accepted by rnes's --harness flag, to a
 // constructor for it. Each harness owns its own config path (e.g. opencode's
-// default global config location) rather than taking one from oc's flags.
+// default global config location) rather than taking one from rnes's flags.
 var registry = map[string]func(Options) (Harness, error){
 	"opencode": newOpencode,
 }

@@ -73,7 +73,7 @@ func NewCA(hosts []string) (*CA, error) {
 	now := time.Now()
 	tmpl := &x509.Certificate{
 		SerialNumber:          serial,
-		Subject:               pkix.Name{CommonName: "oc-proxy session CA"},
+		Subject:               pkix.Name{CommonName: "rnes-proxy session CA"},
 		NotBefore:             now.Add(-time.Minute),
 		NotAfter:              now.Add(caLifetime),
 		IsCA:                  true,

@@ -7,14 +7,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/df3l0p/oc/internal/proxy"
+	"github.com/df3l0p/rnes/internal/proxy"
 )
 
 // fakeDockerProxy is fakeDockerOutput for code that starts the proxy: its
-// `docker logs` reports oc-proxy as listening, the way a healthy one does.
+// `docker logs` reports rnes-proxy as listening, the way a healthy one does.
 func fakeDockerProxy(t *testing.T, exitFor map[string]int, stdoutFor map[string]string) string {
 	t.Helper()
-	out := map[string]string{"logs": "oc-proxy: listening on [::]:8888"}
+	out := map[string]string{"logs": "rnes-proxy: listening on [::]:8888"}
 	for prefix, text := range stdoutFor {
 		out[prefix] = text
 	}
@@ -24,20 +24,20 @@ func fakeDockerProxy(t *testing.T, exitFor map[string]int, stdoutFor map[string]
 func TestStartProxyNetCreatesNetworkThenContainerThenConnectsBridge(t *testing.T) {
 	logPath := fakeDockerProxy(t, nil, nil)
 
-	p, err := startProxyNet("oc-proxy:test", "172.17.0.1", []byte("host.docker.internal:8080\n"), false, nil)
+	p, err := startProxyNet("rnes-proxy:test", "172.17.0.1", []byte("host.docker.internal:8080\n"), false, nil)
 	if err != nil {
 		t.Fatalf("startProxyNet: %v", err)
 	}
 	defer p.stop()
 
 	// The same session id backs the network name, the container name, and
-	// the oc.session label on both, so an operator can correlate all three
+	// the rnes.session label on both, so an operator can correlate all three
 	// (and docker ps/network ls --filter by it).
-	id := strings.TrimPrefix(p.network, "oc-net-")
+	id := strings.TrimPrefix(p.network, "rnes-net-")
 	if id == "" || id == p.network {
 		t.Fatalf("could not derive session id from network name %q", p.network)
 	}
-	label := "oc.session=" + id
+	label := "rnes.session=" + id
 
 	calls := calls(t, logPath)
 	var netCreateIdx, runIdx, connectIdx = -1, -1, -1
@@ -56,7 +56,7 @@ func TestStartProxyNetCreatesNetworkThenContainerThenConnectsBridge(t *testing.T
 			if !strings.Contains(c, "--name "+p.container) {
 				t.Errorf("proxy run args missing --name %s: %s", p.container, c)
 			}
-			// Not --rm: if oc-proxy dies at startup, its logs are the only
+			// Not --rm: if rnes-proxy dies at startup, its logs are the only
 			// clue, and stop() removes the container anyway.
 			if strings.Contains(c, "--rm") {
 				t.Errorf("proxy run args must not use --rm: %s", c)
@@ -70,10 +70,10 @@ func TestStartProxyNetCreatesNetworkThenContainerThenConnectsBridge(t *testing.T
 			if !strings.Contains(c, "--add-host host.docker.internal:172.17.0.1") {
 				t.Errorf("proxy run args missing the host add-host: %s", c)
 			}
-			if !strings.Contains(c, ":/etc/oc-proxy/policy.txt:ro") {
+			if !strings.Contains(c, ":/etc/rnes-proxy/policy.txt:ro") {
 				t.Errorf("proxy run args missing the policy.txt mount: %s", c)
 			}
-			if !strings.Contains(c, "oc-proxy:test") {
+			if !strings.Contains(c, "rnes-proxy:test") {
 				t.Errorf("proxy run args missing the image: %s", c)
 			}
 		case strings.HasPrefix(c, "network connect "+p.network+" "+p.container):
@@ -91,7 +91,7 @@ func TestStartProxyNetCreatesNetworkThenContainerThenConnectsBridge(t *testing.T
 func TestStartProxyNetWritesThePolicyFile(t *testing.T) {
 	fakeDockerProxy(t, nil, nil)
 	policy := []byte("# comment\nhost.docker.internal:8080\n")
-	p, err := startProxyNet("oc-proxy:test", "172.17.0.1", policy, false, nil)
+	p, err := startProxyNet("rnes-proxy:test", "172.17.0.1", policy, false, nil)
 	if err != nil {
 		t.Fatalf("startProxyNet: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestStartProxyNetWritesThePolicyFile(t *testing.T) {
 
 func TestProxyNetStopTearsDownContainerThenNetwork(t *testing.T) {
 	logPath := fakeDockerProxy(t, nil, nil)
-	p, err := startProxyNet("oc-proxy:test", "172.17.0.1", nil, false, nil)
+	p, err := startProxyNet("rnes-proxy:test", "172.17.0.1", nil, false, nil)
 	if err != nil {
 		t.Fatalf("startProxyNet: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestProxyNetStopTearsDownContainerThenNetwork(t *testing.T) {
 
 func TestStartProxyNetCleansUpTheNetworkWhenTheContainerFailsToStart(t *testing.T) {
 	logPath := fakeDocker(t, map[string]int{"run -d": 1})
-	if _, err := startProxyNet("oc-proxy:test", "172.17.0.1", nil, false, nil); err == nil {
+	if _, err := startProxyNet("rnes-proxy:test", "172.17.0.1", nil, false, nil); err == nil {
 		t.Fatal("expected an error when the proxy container fails to start")
 	}
 	var created, removed string
@@ -156,14 +156,14 @@ func TestStartProxyNetCleansUpTheNetworkWhenTheContainerFailsToStart(t *testing.
 
 // TestStartProxyNetSurfacesDockerStderr checks that a docker failure's own
 // stderr output ends up in the returned error, not just docker's bare exit
-// status: that's the only clue an operator sees, since oc never runs docker
+// status: that's the only clue an operator sees, since rnes never runs docker
 // with its own stdout/stderr wired to the terminal here.
 func TestStartProxyNetSurfacesDockerStderr(t *testing.T) {
 	fakeDockerOutput(t,
 		map[string]int{"network create": 1},
 		map[string]string{"network create": "Error response from daemon: pool overlaps with other one on this address space"},
 	)
-	_, err := startProxyNet("oc-proxy:test", "172.17.0.1", nil, false, nil)
+	_, err := startProxyNet("rnes-proxy:test", "172.17.0.1", nil, false, nil)
 	if err == nil {
 		t.Fatal("expected an error when network create fails")
 	}
@@ -200,7 +200,7 @@ func TestDefaultPolicyListsTheGitHubProviderHostsExplicitly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := proxy.NewGitHubProvider("github_pat_x", "oc_placeholder_1")
+	p, err := proxy.NewGitHubProvider("github_pat_x", "rnes_placeholder_1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,13 +232,13 @@ func TestSandboxPolicyIsDefaultsPlusModelServer(t *testing.T) {
 	}
 }
 
-// If oc-proxy exits at startup, startProxyNet must fail with its output (the
+// If rnes-proxy exits at startup, startProxyNet must fail with its output (the
 // only clue why) and clean up, instead of starting a sandbox whose every
 // request would then fail.
 func TestStartProxyNetFailsWithTheProxyOutputWhenItExitsAtStartup(t *testing.T) {
-	const why = "oc-proxy: parsing policy file /etc/oc-proxy/policy.txt: line 3: \"github.com\" is not host:port"
+	const why = "rnes-proxy: parsing policy file /etc/rnes-proxy/policy.txt: line 3: \"github.com\" is not host:port"
 	logPath := fakeDockerOutput(t, nil, map[string]string{"logs": why, "inspect -f": "false"})
-	_, err := startProxyNet("oc-proxy:test", "172.17.0.1", nil, false, nil)
+	_, err := startProxyNet("rnes-proxy:test", "172.17.0.1", nil, false, nil)
 	if err == nil {
 		t.Fatal("expected an error when the proxy container exits at startup")
 	}
@@ -247,8 +247,8 @@ func TestStartProxyNetFailsWithTheProxyOutputWhenItExitsAtStartup(t *testing.T) 
 	}
 	var removedContainer, removedNetwork bool
 	for _, c := range calls(t, logPath) {
-		removedContainer = removedContainer || strings.HasPrefix(c, "rm -f oc-proxy-")
-		removedNetwork = removedNetwork || strings.HasPrefix(c, "network rm oc-net-")
+		removedContainer = removedContainer || strings.HasPrefix(c, "rm -f rnes-proxy-")
+		removedNetwork = removedNetwork || strings.HasPrefix(c, "network rm rnes-net-")
 	}
 	if !removedContainer || !removedNetwork {
 		t.Errorf("a failed start must remove the container and network, got %q", calls(t, logPath))
@@ -257,7 +257,7 @@ func TestStartProxyNetFailsWithTheProxyOutputWhenItExitsAtStartup(t *testing.T) 
 
 func TestStartProxyNetWaitsForTheProxyToListen(t *testing.T) {
 	logPath := fakeDockerProxy(t, nil, nil)
-	p, err := startProxyNet("oc-proxy:test", "172.17.0.1", nil, false, nil)
+	p, err := startProxyNet("rnes-proxy:test", "172.17.0.1", nil, false, nil)
 	if err != nil {
 		t.Fatalf("startProxyNet: %v", err)
 	}
@@ -291,22 +291,22 @@ func TestSandboxPolicyWithAllNetAllowsAnyPublicHost(t *testing.T) {
 func TestStartProxyNetWithInspectCreatesTheCAVolumeAndRunsTheProxyWithIt(t *testing.T) {
 	logPath := fakeDockerProxy(t, nil, nil)
 	t.Setenv("TMPDIR", t.TempDir())
-	p, err := startProxyNet("oc-proxy:test", "172.17.0.1", nil, true, nil)
+	p, err := startProxyNet("rnes-proxy:test", "172.17.0.1", nil, true, nil)
 	if err != nil {
 		t.Fatalf("startProxyNet: %v", err)
 	}
 	defer p.stop()
 
-	id := strings.TrimPrefix(p.network, "oc-net-")
-	if p.caVolume != "oc-ca-"+id {
-		t.Fatalf("caVolume = %q, want oc-ca-%s (same session id as the network)", p.caVolume, id)
+	id := strings.TrimPrefix(p.network, "rnes-net-")
+	if p.caVolume != "rnes-ca-"+id {
+		t.Fatalf("caVolume = %q, want rnes-ca-%s (same session id as the network)", p.caVolume, id)
 	}
 	volIdx, runIdx := -1, -1
 	for i, c := range calls(t, logPath) {
 		switch {
 		case strings.HasPrefix(c, "volume create "):
 			volIdx = i
-			if !strings.Contains(c, "--label oc.session="+id) || !strings.HasSuffix(c, p.caVolume) {
+			if !strings.Contains(c, "--label rnes.session="+id) || !strings.HasSuffix(c, p.caVolume) {
 				t.Errorf("volume create = %q, want the session label and the volume name", c)
 			}
 		case strings.HasPrefix(c, "run -d "):
@@ -314,7 +314,7 @@ func TestStartProxyNetWithInspectCreatesTheCAVolumeAndRunsTheProxyWithIt(t *test
 			if !strings.Contains(c, "-v "+p.caVolume+":/ca ") {
 				t.Errorf("proxy run args missing the CA volume mount: %s", c)
 			}
-			if !strings.HasSuffix(c, "oc-proxy:test -intercept") {
+			if !strings.HasSuffix(c, "rnes-proxy:test -intercept") {
 				t.Errorf("proxy run args must end with the image and -intercept: %s", c)
 			}
 		}
@@ -326,7 +326,7 @@ func TestStartProxyNetWithInspectCreatesTheCAVolumeAndRunsTheProxyWithIt(t *test
 
 func TestStartProxyNetWithoutInspectHasNoVolumeAndNoIntercept(t *testing.T) {
 	logPath := fakeDockerProxy(t, nil, nil)
-	p, err := startProxyNet("oc-proxy:test", "172.17.0.1", nil, false, nil)
+	p, err := startProxyNet("rnes-proxy:test", "172.17.0.1", nil, false, nil)
 	if err != nil {
 		t.Fatalf("startProxyNet: %v", err)
 	}
@@ -344,7 +344,7 @@ func TestStartProxyNetWithoutInspectHasNoVolumeAndNoIntercept(t *testing.T) {
 func TestProxyNetStopRemovesTheCAVolumeLast(t *testing.T) {
 	logPath := fakeDockerProxy(t, nil, nil)
 	t.Setenv("TMPDIR", t.TempDir())
-	p, err := startProxyNet("oc-proxy:test", "172.17.0.1", nil, true, nil)
+	p, err := startProxyNet("rnes-proxy:test", "172.17.0.1", nil, true, nil)
 	if err != nil {
 		t.Fatalf("startProxyNet: %v", err)
 	}
@@ -371,7 +371,7 @@ func TestProxyNetStopRemovesTheCAVolumeLast(t *testing.T) {
 
 func TestStartProxyNetRemovesTheCAVolumeWhenTheContainerFailsToStart(t *testing.T) {
 	logPath := fakeDocker(t, map[string]int{"run -d": 1})
-	if _, err := startProxyNet("oc-proxy:test", "172.17.0.1", nil, true, nil); err == nil {
+	if _, err := startProxyNet("rnes-proxy:test", "172.17.0.1", nil, true, nil); err == nil {
 		t.Fatal("expected an error when the proxy container fails to start")
 	}
 	var created, removed string
@@ -393,14 +393,14 @@ func TestStartProxyNetWithInspectFollowsTheProxyLogIntoAFile(t *testing.T) {
 	logPath := fakeDockerProxy(t, nil, nil)
 	tmp := t.TempDir()
 	t.Setenv("TMPDIR", tmp)
-	p, err := startProxyNet("oc-proxy:test", "172.17.0.1", nil, true, nil)
+	p, err := startProxyNet("rnes-proxy:test", "172.17.0.1", nil, true, nil)
 	if err != nil {
 		t.Fatalf("startProxyNet: %v", err)
 	}
 	defer p.stop()
 
-	if !strings.HasPrefix(p.logFile, tmp) || !strings.Contains(p.logFile, "oc-proxy-") {
-		t.Errorf("logFile = %q, want an oc-proxy-<id> file under $TMPDIR", p.logFile)
+	if !strings.HasPrefix(p.logFile, tmp) || !strings.Contains(p.logFile, "rnes-proxy-") {
+		t.Errorf("logFile = %q, want an rnes-proxy-<id> file under $TMPDIR", p.logFile)
 	}
 	if _, err := os.Stat(p.logFile); err != nil {
 		t.Errorf("log file was not created: %v", err)
@@ -433,11 +433,11 @@ func TestStartProxyNetWithInspectFollowsTheProxyLogIntoAFile(t *testing.T) {
 func TestStartProxyNetSendsProvidersOnStdinAndNeverInArgv(t *testing.T) {
 	logPath := fakeDockerProxy(t, nil, nil)
 	t.Setenv("TMPDIR", t.TempDir())
-	line, err := proxy.EncodeProviders([]proxy.ProviderConfig{{Name: "github", Token: "github_pat_SECRET", Placeholder: "oc_placeholder_1"}})
+	line, err := proxy.EncodeProviders([]proxy.ProviderConfig{{Name: "github", Token: "github_pat_SECRET", Placeholder: "rnes_placeholder_1"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := startProxyNet("oc-proxy:test", "172.17.0.1", nil, true, line)
+	p, err := startProxyNet("rnes-proxy:test", "172.17.0.1", nil, true, line)
 	if err != nil {
 		t.Fatalf("startProxyNet: %v", err)
 	}
@@ -458,7 +458,7 @@ func TestStartProxyNetSendsProvidersOnStdinAndNeverInArgv(t *testing.T) {
 			connectIdx = i
 		}
 	}
-	if !strings.Contains(runCall, " -i ") || !strings.HasSuffix(runCall, "oc-proxy:test -intercept -providers-stdin") {
+	if !strings.Contains(runCall, " -i ") || !strings.HasSuffix(runCall, "rnes-proxy:test -intercept -providers-stdin") {
 		t.Errorf("run args = %q, want -i before the image and -intercept -providers-stdin after it", runCall)
 	}
 	if !strings.Contains(attachCall, "--sig-proxy=false") || !strings.HasSuffix(attachCall, p.container) {
@@ -475,7 +475,7 @@ func TestStartProxyNetSendsProvidersOnStdinAndNeverInArgv(t *testing.T) {
 func TestStartProxyNetWithoutProvidersDoesNotAttachOrOpenStdin(t *testing.T) {
 	logPath := fakeDockerProxy(t, nil, nil)
 	t.Setenv("TMPDIR", t.TempDir())
-	p, err := startProxyNet("oc-proxy:test", "172.17.0.1", nil, true, nil)
+	p, err := startProxyNet("rnes-proxy:test", "172.17.0.1", nil, true, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -492,20 +492,20 @@ func TestStartProxyNetWithoutProvidersDoesNotAttachOrOpenStdin(t *testing.T) {
 
 func TestStartProxyNetRefusesProvidersWithoutInspect(t *testing.T) {
 	fakeDockerProxy(t, nil, nil)
-	if _, err := startProxyNet("oc-proxy:test", "172.17.0.1", nil, false, []byte("x\n")); err == nil {
+	if _, err := startProxyNet("rnes-proxy:test", "172.17.0.1", nil, false, []byte("x\n")); err == nil {
 		t.Fatal("want an error: credentials can't be injected without decrypting")
 	}
 }
 
-// If docker attach fails, the proxy would wait on stdin for ever: oc has to say
+// If docker attach fails, the proxy would wait on stdin for ever: rnes has to say
 // so as soon as it knows, not after the readiness timeout.
 func TestStartProxyNetFailsFastWhenAttachFails(t *testing.T) {
 	fakeDockerOutput(t, map[string]int{"attach": 1}, map[string]string{"logs": "", "inspect": "true"})
 	t.Setenv("TMPDIR", t.TempDir())
-	line, _ := proxy.EncodeProviders([]proxy.ProviderConfig{{Name: "github", Token: "github_pat_x", Placeholder: "oc_placeholder_1"}})
+	line, _ := proxy.EncodeProviders([]proxy.ProviderConfig{{Name: "github", Token: "github_pat_x", Placeholder: "rnes_placeholder_1"}})
 
 	start := time.Now()
-	_, err := startProxyNet("oc-proxy:test", "172.17.0.1", nil, true, line)
+	_, err := startProxyNet("rnes-proxy:test", "172.17.0.1", nil, true, line)
 	if err == nil || !strings.Contains(err.Error(), "attach") {
 		t.Fatalf("err = %v, want one naming docker attach", err)
 	}

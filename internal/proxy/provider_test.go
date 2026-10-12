@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	testPlaceholder = "oc_placeholder_0123456789abcdef"
+	testPlaceholder = "rnes_placeholder_0123456789abcdef"
 	testSecret      = "github_pat_REALSECRET"
 )
 
@@ -289,21 +289,21 @@ func TestInterceptAnswers502WhenTheCredentialIsUnavailable(t *testing.T) {
 // Several providers side by side: each swaps only its own placeholder, at its
 // own hosts.
 func TestInjectorHandlesSeveralProvidersIndependently(t *testing.T) {
-	a, _ := NewStaticProvider("a", []string{"a.example:443"}, "secret-a", "oc_placeholder_a")
-	b, _ := NewStaticProvider("b", []string{"b.example:443"}, "secret-b", "oc_placeholder_b")
+	a, _ := NewStaticProvider("a", []string{"a.example:443"}, "secret-a", "rnes_placeholder_a")
+	b, _ := NewStaticProvider("b", []string{"b.example:443"}, "secret-b", "rnes_placeholder_b")
 	in := &Injector{Providers: []Provider{a, b}}
 
-	ra := newReq("https://a.example/x", "Bearer oc_placeholder_a")
+	ra := newReq("https://a.example/x", "Bearer rnes_placeholder_a")
 	if err := in.OnRequest(ra, "a.example:443"); err != nil || ra.Header.Get("Authorization") != "Bearer secret-a" {
 		t.Errorf("a: err=%v Authorization=%q", err, ra.Header.Get("Authorization"))
 	}
-	rb := newReq("https://b.example/x", "Bearer oc_placeholder_b")
+	rb := newReq("https://b.example/x", "Bearer rnes_placeholder_b")
 	if err := in.OnRequest(rb, "b.example:443"); err != nil || rb.Header.Get("Authorization") != "Bearer secret-b" {
 		t.Errorf("b: err=%v Authorization=%q", err, rb.Header.Get("Authorization"))
 	}
 	// a's placeholder at b's host is not replaced: it is only valid at a's.
-	cross := newReq("https://b.example/x", "Bearer oc_placeholder_a")
-	if err := in.OnRequest(cross, "b.example:443"); err != nil || cross.Header.Get("Authorization") != "Bearer oc_placeholder_a" {
+	cross := newReq("https://b.example/x", "Bearer rnes_placeholder_a")
+	if err := in.OnRequest(cross, "b.example:443"); err != nil || cross.Header.Get("Authorization") != "Bearer rnes_placeholder_a" {
 		t.Errorf("a's placeholder at b's host: err=%v Authorization=%q", err, cross.Header.Get("Authorization"))
 	}
 }

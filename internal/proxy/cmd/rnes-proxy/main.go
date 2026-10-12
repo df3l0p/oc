@@ -1,5 +1,5 @@
-// Command oc-proxy is the sandbox's egress proxy. It is not meant to be run
-// directly by a person: oc builds it into a small image and starts it as a
+// Command rnes-proxy is the sandbox's egress proxy. It is not meant to be run
+// directly by a person: rnes builds it into a small image and starts it as a
 // container for the lifetime of one sandbox session.
 package main
 
@@ -12,49 +12,49 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/df3l0p/oc/internal/proxy"
+	"github.com/df3l0p/rnes/internal/proxy"
 )
 
 func main() {
 	addr := flag.String("addr", ":8888", "address to listen on")
-	policyPath := flag.String("policy", "/etc/oc-proxy/policy.txt", "path to the allow-list policy file (one host:port per line)")
+	policyPath := flag.String("policy", "/etc/rnes-proxy/policy.txt", "path to the allow-list policy file (one host:port per line)")
 	intercept := flag.Bool("intercept", false, "terminate TLS for the hosts the policy lists explicitly, with a CA created for this run, and log each request")
 	caOut := flag.String("ca-out", "/ca/ca.pem", "with -intercept: where to write the trust bundle (the system roots plus the session CA's certificate; the CA's key is never written)")
 	systemRoots := flag.String("system-roots", "/etc/ssl/certs/ca-certificates.crt", "with -intercept: the system trust roots to include in the bundle")
 	providersStdin := flag.Bool("providers-stdin", false, "with -intercept: read one line of provider config (credentials to inject) from stdin before listening")
 	flag.Parse()
 	if *providersStdin && !*intercept {
-		log.Fatal("oc-proxy: -providers-stdin needs -intercept: credentials can only be injected into decrypted requests")
+		log.Fatal("rnes-proxy: -providers-stdin needs -intercept: credentials can only be injected into decrypted requests")
 	}
 
 	pol, err := proxy.LoadPolicy(*policyPath)
 	if err != nil {
-		log.Fatalf("oc-proxy: %v", err)
+		log.Fatalf("rnes-proxy: %v", err)
 	}
 	srv := &proxy.Server{Policy: pol}
 	if *intercept {
 		ca, err := proxy.NewCA(pol.DNSHosts())
 		if err != nil {
-			log.Fatalf("oc-proxy: %v", err)
+			log.Fatalf("rnes-proxy: %v", err)
 		}
 		bundle, err := ca.Bundle(*systemRoots)
 		if err != nil {
-			log.Fatalf("oc-proxy: %v", err)
+			log.Fatalf("rnes-proxy: %v", err)
 		}
 		// World-readable: the sandbox reads it as another user, and it holds
 		// only public certificates.
 		if err := os.WriteFile(*caOut, bundle, 0o644); err != nil {
-			log.Fatalf("oc-proxy: writing the trust bundle: %v", err)
+			log.Fatalf("rnes-proxy: writing the trust bundle: %v", err)
 		}
-		fmt.Printf("oc-proxy: intercepting %v; trust bundle written to %s\n", pol.DNSHosts(), *caOut)
+		fmt.Printf("rnes-proxy: intercepting %v; trust bundle written to %s\n", pol.DNSHosts(), *caOut)
 		srv.CA = ca
 		if *providersStdin {
 			inj, err := proxy.InjectorFromStdin(bufio.NewReader(os.Stdin), pol, log.Printf)
 			if err != nil {
-				log.Fatalf("oc-proxy: %v", err)
+				log.Fatalf("rnes-proxy: %v", err)
 			}
 			for _, p := range inj.Providers {
-				fmt.Printf("oc-proxy: provider %s will be injected at %v\n", p.Name(), p.Hosts())
+				fmt.Printf("rnes-proxy: provider %s will be injected at %v\n", p.Name(), p.Hosts())
 			}
 			srv.OnRequest = inj.OnRequest
 		}
@@ -62,11 +62,11 @@ func main() {
 
 	ln, err := net.Listen("tcp", *addr)
 	if err != nil {
-		log.Fatalf("oc-proxy: %v", err)
+		log.Fatalf("rnes-proxy: %v", err)
 	}
-	// oc waits for this line before starting the sandbox, so print it only
+	// rnes waits for this line before starting the sandbox, so print it only
 	// once the port is actually bound (and, with -intercept, the bundle is
 	// written, which it is by now).
-	fmt.Printf("oc-proxy: listening on %s\n", ln.Addr())
+	fmt.Printf("rnes-proxy: listening on %s\n", ln.Addr())
 	log.Fatal(http.Serve(ln, srv))
 }

@@ -1,6 +1,6 @@
 # Compiled binary
-/oc
-/oc.exe
+/rnes
+/rnes.exe
 
 # Go workspace and build artifacts
 /bin/

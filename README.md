@@ -1,10 +1,10 @@
-# oc
+# rnes
 
-`oc` runs a coding agent against a local model with one command: it starts
+`rnes` runs a coding agent against a local model with one command: it starts
 `llama-server` (llama.cpp) if one isn't already running, points the agent at
 it, and launches the agent in the current directory.
 
-Concretely, running `oc` in a project:
+Concretely, running `rnes` in a project:
 
 1. Checks whether a `llama-server`/`llama serve` instance is already
    healthy on the target host/port; if not, starts one in router mode (no
@@ -14,7 +14,7 @@ Concretely, running `oc` in a project:
    entry listing all of them into the agent's config. If `-model` isn't
    among them, it's downloaded first (`llama download`, unified CLI only).
 3. Runs the agent in the current directory with `-model` selected.
-4. On exit, stops the `llama-server` it started — unless another `oc`
+4. On exit, stops the `llama-server` it started — unless another `rnes`
    process is still using it, in which case it's left running.
 
 ## Requirements
@@ -27,20 +27,20 @@ Concretely, running `oc` in a project:
 ## Install
 
 ```sh
-go install github.com/df3l0p/oc@latest
+go install github.com/df3l0p/rnes@latest
 ```
 
 or build from a checkout:
 
 ```sh
-go build -o oc .
+go build -o rnes .
 ```
 
 ## Usage
 
 ```sh
 cd your-project
-oc
+rnes
 ```
 
 This starts (or reuses) a llama-server serving the default model, merges a
@@ -62,7 +62,7 @@ This starts (or reuses) a llama-server serving the default model, merges a
 
 Each harness owns its own config path internally (opencode's is its default
 global config, `~/.config/opencode/opencode.jsonc`) — there's no flag for it.
-`oc` merges into that file without touching any other keys already there,
+`rnes` merges into that file without touching any other keys already there,
 and points the agent at it via that agent's own config env var
 (`OPENCODE_CONFIG` for opencode), so it works even if the agent's normal
 config resolution would otherwise pick something else up.
@@ -71,25 +71,25 @@ config resolution would otherwise pick something else up.
 
 | Variable          | Description |
 | ----------------- | ----------- |
-| `OC_GITHUB_TOKEN` | GitHub token the sandbox's proxy injects for `git` and `gh` (requires `-sandbox`; see *GitHub credentials* below). Prefer a fine-grained token; to reuse your `gh` login, `export OC_GITHUB_TOKEN=$(gh auth token)`. |
+| `RNES_GITHUB_TOKEN` | GitHub token the sandbox's proxy injects for `git` and `gh` (requires `-sandbox`; see *GitHub credentials* below). Prefer a fine-grained token; to reuse your `gh` login, `export RNES_GITHUB_TOKEN=$(gh auth token)`. |
 
 ### Sharing a llama-server across sessions
 
-If a healthy llama-server is already listening on the target port, `oc`
-reuses it instead of starting a second one. Each running `oc` process
-registers itself as a user of that port; when an `oc` that started the
-server exits, it only stops the server once no other `oc` process is still
+If a healthy llama-server is already listening on the target port, `rnes`
+reuses it instead of starting a second one. Each running `rnes` process
+registers itself as a user of that port; when an `rnes` that started the
+server exits, it only stops the server once no other `rnes` process is still
 registered against it.
 
 Because the server runs in router mode, sessions sharing it can each pick a
 different `-model`. A server started some other way with a fixed model
-(`-hf`/`-m`) only serves that model; `oc -model <other>` against it fails
+(`-hf`/`-m`) only serves that model; `rnes -model <other>` against it fails
 with an error rather than silently using the wrong model — stop it or use
 `-port`.
 
 ### Sandbox mode
 
-`oc -sandbox` runs the agent inside a Docker container instead of on the
+`rnes -sandbox` runs the agent inside a Docker container instead of on the
 host. The llama-server still runs on the host; the sandbox container has no
 direct route to it and instead reaches it through its per-session egress
 proxy, which is what resolves `host.docker.internal`. The current directory
@@ -97,7 +97,7 @@ is bind-mounted at `/workspace`, and the container runs as your uid/gid so
 files it writes keep your ownership. Only `docker` is needed on the host (not
 opencode).
 
-- **Config:** `oc` generates a private copy of your opencode config with the
+- **Config:** `rnes` generates a private copy of your opencode config with the
   `llama-cpp` provider's `baseURL` rewritten for the container and mounts it
   read-only. Your real config is not modified.
 - **Images:** `-image <name>` selects one of the images bundled in
@@ -105,27 +105,27 @@ opencode).
   has opencode, git, `jq`, `ripgrep` and `curl`. Every image is a layer on an
   internal `base` image (opencode, git, the non-root user) that isn't
   selectable itself.
-  `oc` never pulls a sandbox image from a registry: a missing image is built
+  `rnes` never pulls a sandbox image from a registry: a missing image is built
   from its Dockerfile (a build failure is an error). `-build` rebuilds the
   images from scratch, ignoring docker's layer cache, so it also picks up new
   apt package versions and a newer `opencode-ai`; without it, an existing image
   is reused indefinitely.
-  Images are tagged `oc-sandbox-<name>:<hash>` from the Dockerfile's contents
+  Images are tagged `rnes-sandbox-<name>:<hash>` from the Dockerfile's contents
   (and that of the base), so a changed Dockerfile builds a new image and an
   unchanged one is reused. Note the build itself still fetches the
   `node:22-slim` base image, apt packages and the `opencode-ai` npm package; to
   control that, review or pin them in the Dockerfiles. Old tags are not
-  removed automatically; list them with `docker images 'oc-sandbox-*'` and
+  removed automatically; list them with `docker images 'rnes-sandbox-*'` and
   delete the ones you no longer need with `docker rmi`.
   - **Adding an image:** add `images/<name>.Dockerfile` as a layer on the
-    base: declare `ARG OC_BASE`, make the final stage `FROM ${OC_BASE}` (oc
-    passes the built base image as that build arg), and end with `USER oc`,
+    base: declare `ARG RNES_BASE`, make the final stage `FROM ${RNES_BASE}` (rnes
+    passes the built base image as that build arg), and end with `USER rnes`,
     after a `USER root` for installs. A test checks every bundled Dockerfile
     against this. Dockerfiles are built without a build context, so they can't
     `COPY` local files.
 - **Parallel sessions:** each session gets a uniquely named container, and
   any number can share one host llama-server (same lifecycle rules as above).
-- **Network exposure:** `oc` never listens on all interfaces by default. With
+- **Network exposure:** `rnes` never listens on all interfaces by default. With
   the default `-host`, llama-server listens on `127.0.0.1` on macOS and Docker
   Desktop (which forward `host.docker.internal` to the host's loopback), and on
   the default Docker bridge's gateway IP (usually `172.17.0.1`) with a native
@@ -134,7 +134,7 @@ opencode).
   is pointed at the same IP. An explicit `-host` is used as is (a wildcard
   like `0.0.0.0` prints a warning).
   - On Linux, an already-running server bound to `127.0.0.1` isn't reachable
-    from the proxy container, so `oc` stops with an error instead of reusing
+    from the proxy container, so `rnes` stops with an error instead of reusing
     it.
 - **Egress:** the sandbox container has no direct network access. Instead,
   each session gets its own proxy container on a private network between the
@@ -143,12 +143,12 @@ opencode).
   server plus `registry.npmjs.org`, `github.com`, `api.github.com` and
   `models.dev` (all over https) and blocks everything else, including non-HTTP
   protocols such as git over ssh. Those defaults live in
-  `internal/harness/policy.txt` (one `host:port` per line), built into `oc`.
+  `internal/harness/policy.txt` (one `host:port` per line), built into `rnes`.
   `-all-net` opens the sandbox up to any public host over http(s) instead;
   your machine, your LAN and other private or VPN ranges stay blocked even
   by IP (the proxy checks the address it actually connects to), apart from
   llama-server. A blocked host shows up to the agent as a 403 response from
-  `oc-proxy`. The proxy container itself
+  `rnes-proxy`. The proxy container itself
   reaches the host over the default Docker bridge, same as llama-server's own listen
   address above, so on Linux a host firewall (e.g. `ufw`) may still need to
   allow bridge-to-host traffic, and other containers on that bridge can
@@ -157,7 +157,7 @@ opencode).
   network and the proxy container are torn down when the session ends.
 - **TLS interception:** by default the proxy decrypts HTTPS to the hosts on
   its allow-list so it can log what the agent does with them: one line per
-  request in `$TMPDIR/oc-proxy-<id>.log` (the path is printed at startup, and
+  request in `$TMPDIR/rnes-proxy-<id>.log` (the path is printed at startup, and
   the file is kept after the session) with the method, host, path, status and
   duration, and never the query string, headers or bodies. Hosts opened only by
   `-all-net` are not decrypted; they stay tunnelled with their real
@@ -168,7 +168,7 @@ opencode).
     constraint) to the allow-listed host names, and valid for 30 days.
   - *Trust:* the proxy writes a bundle (the system roots plus the session CA's
     certificate) to a per-session docker volume, which the sandbox mounts
-    read-only at `/etc/oc-ca`. `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`,
+    read-only at `/etc/rnes-ca`. `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`,
     `GIT_SSL_CAINFO`, `CURL_CA_BUNDLE` and `REQUESTS_CA_BUNDLE` point at it, so
     opencode, git, curl and most other tools trust the proxy. The volume is
     removed with the network when the session ends. Nothing about the CA is
@@ -178,7 +178,7 @@ opencode).
     with a 501. A tool that ignores the variables above, or pins certificates,
     fails the TLS handshake; the reason is in the proxy log
     (`TLS handshake for <host> failed`).
-- **GitHub credentials:** with `OC_GITHUB_TOKEN` set, the proxy injects the
+- **GitHub credentials:** with `RNES_GITHUB_TOKEN` set, the proxy injects the
   token into requests to `github.com` (git over https) and `api.github.com`
   (`gh`), so the agent can clone private repos, push and open PRs without the
   token ever being inside the sandbox.
@@ -189,22 +189,22 @@ opencode).
     placeholder anywhere else (path, query, other headers, bodies), or sent to
     any other host, is left as it is, so the upstream rejects it. A placeholder
     is worthless outside the session's proxy.
-  - *How the token reaches the proxy:* `oc` reads `OC_GITHUB_TOKEN`, unsets it,
+  - *How the token reaches the proxy:* `rnes` reads `RNES_GITHUB_TOKEN`, unsets it,
     and sends it to the proxy container on its stdin: never as an argument or
     environment variable (those show in `docker inspect`), never on disk. The
     proxy keeps it in memory only.
   - *Scope:* the token is the only limit on what the agent can do with it; the
     proxy doesn't restrict reads or writes. Use a fine-grained token scoped to
-    what the agent needs. `export OC_GITHUB_TOKEN=$(gh auth token)` reuses your
+    what the agent needs. `export RNES_GITHUB_TOKEN=$(gh auth token)` reuses your
     `gh` login, whose scopes are broad.
   - Requires `-sandbox` (ignored with a note otherwise) and TLS interception:
-    `oc` refuses `-no-inspect` while the variable is set.
+    `rnes` refuses `-no-inspect` while the variable is set.
 - Session data inside the container is discarded on exit (`--rm`).
 
 ## Notes
 
 - llama-server's own logs are written to
-  `$TMPDIR/oc-llama-server-<port>.log` rather than to the terminal, since
+  `$TMPDIR/rnes-llama-server-<port>.log` rather than to the terminal, since
   opencode's full-screen UI shares the same tty and raw log output would
   corrupt it. The path is printed on startup.
 - Only opencode is implemented as a harness today. Adding another means

@@ -13,9 +13,9 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/df3l0p/oc/images"
-	"github.com/df3l0p/oc/internal/opencodeconfig"
-	"github.com/df3l0p/oc/internal/proxy"
+	"github.com/df3l0p/rnes/images"
+	"github.com/df3l0p/rnes/internal/opencodeconfig"
+	"github.com/df3l0p/rnes/internal/proxy"
 )
 
 const (
@@ -28,14 +28,14 @@ const (
 	// containerConfigPath is where the generated config is mounted. It's kept
 	// out of the agent's own config directory so docker doesn't create that
 	// directory root-owned inside the container.
-	containerConfigPath = "/etc/oc/opencode.jsonc"
+	containerConfigPath = "/etc/rnes/opencode.jsonc"
 	containerWorkdir    = "/workspace"
-	containerHome       = "/home/oc"
+	containerHome       = "/home/rnes"
 	// containerCADir is where the session's CA volume is mounted: not under
-	// /etc/oc, where the config above is bind-mounted as a single file.
-	containerCADir = "/etc/oc-ca"
+	// /etc/rnes, where the config above is bind-mounted as a single file.
+	containerCADir = "/etc/rnes-ca"
 	// containerCAPath is the trust bundle in it (the system roots plus the
-	// session CA), named by oc-proxy's -ca-out default.
+	// session CA), named by rnes-proxy's -ca-out default.
 	containerCAPath = containerCADir + "/ca.pem"
 )
 
@@ -164,13 +164,13 @@ func (s *Sandbox) Available() error {
 	return nil
 }
 
-// Prepare makes sure the selected sandbox image exists locally. oc never pulls
+// Prepare makes sure the selected sandbox image exists locally. rnes never pulls
 // its images from a registry (supply-chain hygiene): it uses a local image if
 // present, and otherwise builds it from the bundled Dockerfile, failing if the
 // build fails. Every selectable image is a layer on the internal base image,
 // which is ensured first. With -build both are rebuilt even if they exist.
 //
-// Images are tagged oc-sandbox-<name>:<hash>, the hash covering the Dockerfile
+// Images are tagged rnes-sandbox-<name>:<hash>, the hash covering the Dockerfile
 // (and, for a layer, its base's tag), so a changed Dockerfile builds a new image
 // and an unchanged one is reused. An unknown name fails before docker is used.
 func (s *Sandbox) Prepare() error {
@@ -203,14 +203,14 @@ func (s *Sandbox) Prepare() error {
 }
 
 // ensure builds tag from dockerfile unless it exists locally (or -build was
-// given). A non-empty baseTag is passed as the OC_BASE build arg. -build also
+// given). A non-empty baseTag is passed as the RNES_BASE build arg. -build also
 // skips docker's layer cache: the Dockerfiles' apt and npm steps are unpinned,
 // so cached layers would keep serving old packages and an old opencode.
 func (s *Sandbox) ensure(tag string, dockerfile []byte, baseTag string) error {
 	if !s.build && exec.Command("docker", "image", "inspect", tag).Run() == nil {
 		return nil
 	}
-	fmt.Fprintf(os.Stderr, "oc: building %s\n", tag)
+	fmt.Fprintf(os.Stderr, "rnes: building %s\n", tag)
 	args := []string{"build", "-t", tag, "-"}
 	if baseTag != "" {
 		args = layerBuildArgs(tag, baseTag)
@@ -235,13 +235,13 @@ func imageTag(name string, dockerfile []byte, baseTag string) string {
 	sum.Write(dockerfile)
 	sum.Write([]byte{0})
 	sum.Write([]byte(baseTag))
-	return "oc-sandbox-" + name + ":" + hex.EncodeToString(sum.Sum(nil))[:12]
+	return "rnes-sandbox-" + name + ":" + hex.EncodeToString(sum.Sum(nil))[:12]
 }
 
 // layerBuildArgs is the docker argv that builds a layer's Dockerfile, read from
-// stdin, with the base image's tag as its OC_BASE build arg.
+// stdin, with the base image's tag as its RNES_BASE build arg.
 func layerBuildArgs(tag, baseTag string) []string {
-	return []string{"build", "--build-arg", "OC_BASE=" + baseTag, "-t", tag, "-"}
+	return []string{"build", "--build-arg", "RNES_BASE=" + baseTag, "-t", tag, "-"}
 }
 
 // Configure writes a copy of the host opencode config, with the provider
@@ -259,7 +259,7 @@ func (s *Sandbox) Configure(providerKey, baseURL string, modelIDs []string) erro
 		return err
 	}
 	// CreateTemp creates the file 0600; the container runs as the same uid.
-	f, err := os.CreateTemp("", "oc-sandbox-config-*.jsonc")
+	f, err := os.CreateTemp("", "rnes-sandbox-config-*.jsonc")
 	if err != nil {
 		return fmt.Errorf("creating sandbox config: %w", err)
 	}
@@ -299,7 +299,7 @@ func (s *Sandbox) Run(dir, providerKey, modelID string) error {
 	defer pn.stop()
 	if pn.logFile != "" {
 		// To stderr, before opencode takes the terminal over.
-		fmt.Fprintf(os.Stderr, "oc: sandbox proxy log: %s\n", pn.logFile)
+		fmt.Fprintf(os.Stderr, "rnes: sandbox proxy log: %s\n", pn.logFile)
 	}
 
 	// Unique per invocation so parallel sessions never collide, whatever port
@@ -308,7 +308,7 @@ func (s *Sandbox) Run(dir, providerKey, modelID string) error {
 	if _, err := rand.Read(suffix[:]); err != nil {
 		return fmt.Errorf("generating container name: %w", err)
 	}
-	name := fmt.Sprintf("oc-%d-%s", os.Getpid(), hex.EncodeToString(suffix[:]))
+	name := fmt.Sprintf("rnes-%d-%s", os.Getpid(), hex.EncodeToString(suffix[:]))
 
 	// Backstop for a container left behind if docker's client dies without the
 	// daemon noticing; --rm covers the normal path.
@@ -392,10 +392,10 @@ func newPlaceholder() (string, error) {
 	if _, err := rand.Read(b[:]); err != nil {
 		return "", fmt.Errorf("generating a credential placeholder: %w", err)
 	}
-	return "oc_placeholder_" + hex.EncodeToString(b[:]), nil
+	return "rnes_placeholder_" + hex.EncodeToString(b[:]), nil
 }
 
-// providerConfig is the line of provider config for oc-proxy's stdin, or nil
+// providerConfig is the line of provider config for rnes-proxy's stdin, or nil
 // when the session has no credentials.
 func (s *Sandbox) providerConfig() ([]byte, error) {
 	if s.githubToken == "" {

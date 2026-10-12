@@ -1,11 +1,11 @@
-// Package images holds the sandbox images oc ships, one <name>.Dockerfile per
+// Package images holds the sandbox images rnes ships, one <name>.Dockerfile per
 // image.
 //
-// base is oc's internal foundation: it installs the agent and runs as a
+// base is rnes's internal foundation: it installs the agent and runs as a
 // non-root user. It is not offered to users. Every other image is a selectable
-// layer on base (`oc -sandbox -image <name>`, default is Default): it declares
-// `ARG OC_BASE`, its final stage is `FROM ${OC_BASE}` (oc passes the built base
-// image as that build arg), and it ends as `USER oc`.
+// layer on base (`rnes -sandbox -image <name>`, default is Default): it declares
+// `ARG RNES_BASE`, its final stage is `FROM ${RNES_BASE}` (rnes passes the built base
+// image as that build arg), and it ends as `USER rnes`.
 package images
 
 import (

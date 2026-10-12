@@ -3,7 +3,7 @@ package harness
 import (
 	"testing"
 
-	"github.com/df3l0p/oc/images"
+	"github.com/df3l0p/rnes/images"
 )
 
 func TestNewReturnsRegisteredHarness(t *testing.T) {

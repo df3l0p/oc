@@ -47,12 +47,12 @@ func (s *Server) handleIntercept(w http.ResponseWriter, r *http.Request, target 
 
 	hj, ok := w.(http.Hijacker)
 	if !ok {
-		http.Error(w, "oc-proxy: hijacking not supported", http.StatusInternalServerError)
+		http.Error(w, "rnes-proxy: hijacking not supported", http.StatusInternalServerError)
 		return
 	}
 	client, rw, err := hj.Hijack()
 	if err != nil {
-		http.Error(w, "oc-proxy: hijack: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "rnes-proxy: hijack: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	defer client.Close()
@@ -85,7 +85,7 @@ func (s *Server) handleIntercept(w http.ResponseWriter, r *http.Request, target 
 	if err := tlsConn.HandshakeContext(ctx); err != nil {
 		// A client that doesn't trust the session CA (a pinned certificate, a
 		// tool with its own trust store) ends up here.
-		log.Printf("oc-proxy: TLS handshake for %s failed: %v", target, err)
+		log.Printf("rnes-proxy: TLS handshake for %s failed: %v", target, err)
 		return
 	}
 
@@ -103,7 +103,7 @@ func (s *Server) handleIntercept(w http.ResponseWriter, r *http.Request, target 
 type sniError struct{ got, want string }
 
 func (e *sniError) Error() string {
-	return "oc-proxy: SNI " + e.got + " doesn't match the CONNECT target " + e.want
+	return "rnes-proxy: SNI " + e.got + " doesn't match the CONNECT target " + e.want
 }
 
 // interceptHandler serves one intercepted connection's requests.
@@ -114,7 +114,7 @@ func (s *Server) interceptHandler(target string) http.Handler {
 		// Only host, method, path and status: never the query string (it can
 		// carry secrets), headers or bodies. An upstream failure adds its error,
 		// which names no URL, so a 502 can be diagnosed afterwards.
-		line := fmt.Sprintf("oc-proxy: %s https://%s%s -> %d (%s)", r.Method, target, r.URL.EscapedPath(), status, time.Since(start).Round(time.Millisecond))
+		line := fmt.Sprintf("rnes-proxy: %s https://%s%s -> %d (%s)", r.Method, target, r.URL.EscapedPath(), status, time.Since(start).Round(time.Millisecond))
 		if err != nil {
 			line += ": " + err.Error()
 		}
@@ -126,21 +126,21 @@ func (s *Server) interceptHandler(target string) http.Handler {
 // with, and the upstream error behind a 502.
 func (s *Server) serveIntercepted(w http.ResponseWriter, r *http.Request, target string) (int, error) {
 	if r.Header.Get("Upgrade") != "" {
-		http.Error(w, "oc-proxy: Upgrade (WebSocket) isn't supported on an intercepted connection", http.StatusNotImplemented)
+		http.Error(w, "rnes-proxy: Upgrade (WebSocket) isn't supported on an intercepted connection", http.StatusNotImplemented)
 		return http.StatusNotImplemented, nil
 	}
 	if !hostMatches(r.Host, target) {
-		http.Error(w, "oc-proxy: Host header "+r.Host+" doesn't match the CONNECT target "+target, http.StatusMisdirectedRequest)
+		http.Error(w, "rnes-proxy: Host header "+r.Host+" doesn't match the CONNECT target "+target, http.StatusMisdirectedRequest)
 		return http.StatusMisdirectedRequest, nil
 	}
 	if s.OnRequest != nil {
 		if err := s.OnRequest(r, target); err != nil {
 			var ce *CredentialError
 			if errors.As(err, &ce) {
-				http.Error(w, "oc-proxy: "+ce.Error(), http.StatusBadGateway)
+				http.Error(w, "rnes-proxy: "+ce.Error(), http.StatusBadGateway)
 				return http.StatusBadGateway, err
 			}
-			http.Error(w, "oc-proxy: request refused: "+err.Error(), http.StatusForbidden)
+			http.Error(w, "rnes-proxy: request refused: "+err.Error(), http.StatusForbidden)
 			return http.StatusForbidden, nil
 		}
 	}
@@ -155,7 +155,7 @@ func (s *Server) serveIntercepted(w http.ResponseWriter, r *http.Request, target
 
 	resp, err := s.upstream(target).RoundTrip(out)
 	if err != nil {
-		http.Error(w, "oc-proxy: upstream "+target+": "+err.Error(), http.StatusBadGateway)
+		http.Error(w, "rnes-proxy: upstream "+target+": "+err.Error(), http.StatusBadGateway)
 		return http.StatusBadGateway, err
 	}
 	defer resp.Body.Close()

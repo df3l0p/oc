@@ -153,7 +153,7 @@ func TestOtherSessionsActiveDetectsAnotherRegistrant(t *testing.T) {
 	}
 	defer unregister()
 
-	// Simulate another live oc process: any other running pid will do.
+	// Simulate another live rnes process: any other running pid will do.
 	other := filepath.Join(registryDir(testPort), fmt.Sprintf("%d", os.Getppid()))
 	if err := os.WriteFile(other, nil, 0o600); err != nil {
 		t.Fatal(err)

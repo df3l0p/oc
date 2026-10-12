@@ -16,8 +16,8 @@ import (
 
 const proxyListenAddr = "8888"
 
-// proxyReadyLine is what oc-proxy prints once its port is bound.
-const proxyReadyLine = "oc-proxy: listening on"
+// proxyReadyLine is what rnes-proxy prints once its port is bound.
+const proxyReadyLine = "rnes-proxy: listening on"
 
 // proxyReadyTimeout bounds how long startProxyNet waits for proxyReadyLine.
 const proxyReadyTimeout = 10 * time.Second
@@ -54,7 +54,7 @@ type proxyNet struct {
 }
 
 // proxyCAMount is where the proxy container mounts caVolume. It must be the
-// directory of oc-proxy's -ca-out default (/ca/ca.pem).
+// directory of rnes-proxy's -ca-out default (/ca/ca.pem).
 const proxyCAMount = "/ca"
 
 // logFollowGrace is how long stop() lets the log follower drain after the
@@ -67,7 +67,7 @@ const logFollowGrace = 2 * time.Second
 // proxy's allow-list, in the proxy's policy format. With inspect the proxy
 // also terminates TLS for the policy's explicit hosts: it gets a CA volume to
 // write its trust bundle to, and its log is followed into a file. providers,
-// when non-empty, is the line of provider config oc-proxy reads from its stdin
+// when non-empty, is the line of provider config rnes-proxy reads from its stdin
 // (see proxy.EncodeProviders); it requires inspect, since credentials can only
 // be injected into decrypted requests.
 func startProxyNet(image, hostIP string, policy []byte, inspect bool, providers []byte) (*proxyNet, error) {
@@ -79,11 +79,11 @@ func startProxyNet(image, hostIP string, policy []byte, inspect bool, providers 
 		return nil, fmt.Errorf("generating proxy network name: %w", err)
 	}
 	id := fmt.Sprintf("%d-%s", os.Getpid(), hex.EncodeToString(suffix[:]))
-	p := &proxyNet{network: "oc-net-" + id, container: "oc-proxy-" + id}
+	p := &proxyNet{network: "rnes-net-" + id, container: "rnes-proxy-" + id}
 	// Same id as the network/container names, so `docker ... --filter
-	// label=oc.session=<id>` (or plain `docker ps`/`network ls`) ties both
+	// label=rnes.session=<id>` (or plain `docker ps`/`network ls`) ties both
 	// of one session's resources together.
-	label := "oc.session=" + id
+	label := "rnes.session=" + id
 
 	if out, err := exec.Command("docker", "network", "create", "--internal", "--label", label, p.network).CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("creating proxy network: %w: %s", err, strings.TrimSpace(string(out)))
@@ -92,7 +92,7 @@ func startProxyNet(image, hostIP string, policy []byte, inspect bool, providers 
 	// A named volume, not --rm's anonymous one: the sandbox mounts it too, and
 	// stop() removes it with the rest of the session's resources.
 	if inspect {
-		vol := "oc-ca-" + id
+		vol := "rnes-ca-" + id
 		if out, err := exec.Command("docker", "volume", "create", "--label", label, vol).CombinedOutput(); err != nil {
 			p.stop()
 			return nil, fmt.Errorf("creating proxy CA volume: %w: %s", err, strings.TrimSpace(string(out)))
@@ -108,7 +108,7 @@ func startProxyNet(image, hostIP string, policy []byte, inspect bool, providers 
 	p.policyFile = policyPath
 
 	runArgs := []string{
-		// No --rm: if oc-proxy dies at startup its logs are the only clue
+		// No --rm: if rnes-proxy dies at startup its logs are the only clue
 		// why, and stop() removes the container anyway. --pull=never:
 		// prepareProxyImage already ensured the image locally; never let
 		// docker fetch one from a registry behind our back.
@@ -116,7 +116,7 @@ func startProxyNet(image, hostIP string, policy []byte, inspect bool, providers 
 		"--name", p.container,
 		"--label", label,
 		"--add-host", containerHost + ":" + hostIP,
-		"-v", policyPath + ":/etc/oc-proxy/policy.txt:ro",
+		"-v", policyPath + ":/etc/rnes-proxy/policy.txt:ro",
 	}
 	if inspect {
 		runArgs = append(runArgs, "-v", p.caVolume+":"+proxyCAMount)
@@ -140,7 +140,7 @@ func startProxyNet(image, hostIP string, policy []byte, inspect bool, providers 
 	if len(providers) > 0 {
 		// The container reads its provider config from stdin before it listens.
 		// Sent through docker attach so the secret is in no argv, env or file.
-		// --sig-proxy=false: oc's own Ctrl+C must not be forwarded to the proxy.
+		// --sig-proxy=false: rnes's own Ctrl+C must not be forwarded to the proxy.
 		cmd := exec.Command("docker", "attach", "--sig-proxy=false", p.container)
 		cmd.Stdin = bytes.NewReader(providers)
 		cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
@@ -168,12 +168,12 @@ func startProxyNet(image, hostIP string, policy []byte, inspect bool, providers 
 	return p, nil
 }
 
-// followLogs writes the proxy's log to $TMPDIR/oc-proxy-<id>.log, as it
+// followLogs writes the proxy's log to $TMPDIR/rnes-proxy-<id>.log, as it
 // happens, since opencode's full-screen UI owns the terminal. Best effort: a
 // session without its log is still a working session, so a failure here only
 // leaves logFile empty.
 func (p *proxyNet) followLogs(id string) {
-	path := filepath.Join(os.TempDir(), "oc-proxy-"+id+".log")
+	path := filepath.Join(os.TempDir(), "rnes-proxy-"+id+".log")
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return
@@ -193,7 +193,7 @@ func (p *proxyNet) followLogs(id string) {
 	}()
 }
 
-// waitReady blocks until oc-proxy reports it's listening, so the sandbox
+// waitReady blocks until rnes-proxy reports it's listening, so the sandbox
 // never starts against a proxy that died at startup. On failure the error
 // carries the proxy's own output, the only clue why.
 func (p *proxyNet) waitReady() error {
@@ -226,7 +226,7 @@ func (p *proxyNet) waitReady() error {
 // writePolicyFile writes policy to a private temp file, returning its path.
 // The caller owns cleanup.
 func writePolicyFile(policy []byte) (string, error) {
-	f, err := os.CreateTemp("", "oc-proxy-policy-*.txt")
+	f, err := os.CreateTemp("", "rnes-proxy-policy-*.txt")
 	if err != nil {
 		return "", fmt.Errorf("creating proxy policy file: %w", err)
 	}

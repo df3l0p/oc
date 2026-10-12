@@ -8,14 +8,14 @@ import (
 )
 
 // validName is what an image name may look like: it becomes part of the Docker
-// repository name oc-sandbox-<name>, which must be lowercase alphanumerics with
+// repository name rnes-sandbox-<name>, which must be lowercase alphanumerics with
 // single separators, or `docker build` fails with an unhelpful tag error.
 var validName = regexp.MustCompile(`^[a-z0-9]+([._-][a-z0-9]+)*$`)
 
 func TestImageNamesAreValidDockerRepositoryNames(t *testing.T) {
 	for _, name := range append([]string{Base}, Names()...) {
 		if !validName.MatchString(name) {
-			t.Errorf("image name %q must match %s (it becomes oc-sandbox-%s)", name, validName, name)
+			t.Errorf("image name %q must match %s (it becomes rnes-sandbox-%s)", name, validName, name)
 		}
 	}
 	// Guard the guard: names it must reject.
@@ -87,9 +87,9 @@ func TestReadBase(t *testing.T) {
 }
 
 // TestBundledImagesFollowTheContract checks every shipped Dockerfile, since
-// oc builds them as-is with no runtime rewriting: the base is standalone; every
-// selectable image is a layer that declares ARG OC_BASE, starts its final stage
-// FROM ${OC_BASE} (which oc passes as a build arg) and hands back to user oc.
+// rnes builds them as-is with no runtime rewriting: the base is standalone; every
+// selectable image is a layer that declares ARG RNES_BASE, starts its final stage
+// FROM ${RNES_BASE} (which rnes passes as a build arg) and hands back to user rnes.
 func TestBundledImagesFollowTheContract(t *testing.T) {
 	all := append([]string{Base}, Names()...)
 	for _, name := range all {
@@ -106,8 +106,8 @@ func TestBundledImagesFollowTheContract(t *testing.T) {
 			}
 			src := string(raw)
 			if name == Base {
-				if strings.Contains(src, "OC_BASE") {
-					t.Error("the base must not depend on OC_BASE")
+				if strings.Contains(src, "RNES_BASE") {
+					t.Error("the base must not depend on RNES_BASE")
 				}
 				if !strings.Contains(src, "npm install -g opencode-ai") {
 					t.Error("the base must install opencode")
@@ -135,7 +135,7 @@ func TestBundledImagesFollowTheContract(t *testing.T) {
 					lastUser = "" // each stage starts from its base's user
 				case "ARG":
 					for _, a := range in.args {
-						if n, _, _ := strings.Cut(a, "="); n == "OC_BASE" && !sawFrom {
+						if n, _, _ := strings.Cut(a, "="); n == "RNES_BASE" && !sawFrom {
 							argBeforeFrom = true
 						}
 					}
@@ -149,19 +149,19 @@ func TestBundledImagesFollowTheContract(t *testing.T) {
 				t.Fatal("no FROM instruction")
 			}
 			if name == Base {
-				if lastUser != "oc" {
-					t.Errorf("the base must end as USER oc, got %q", lastUser)
+				if lastUser != "rnes" {
+					t.Errorf("the base must end as USER rnes, got %q", lastUser)
 				}
 				return
 			}
 			if !argBeforeFrom {
-				t.Error("a layer must declare ARG OC_BASE before its first FROM")
+				t.Error("a layer must declare ARG RNES_BASE before its first FROM")
 			}
-			if finalFrom != "${OC_BASE}" && finalFrom != "$OC_BASE" {
-				t.Errorf("a layer's final stage must be FROM ${OC_BASE}, got FROM %s", finalFrom)
+			if finalFrom != "${RNES_BASE}" && finalFrom != "$RNES_BASE" {
+				t.Errorf("a layer's final stage must be FROM ${RNES_BASE}, got FROM %s", finalFrom)
 			}
-			if lastUser != "oc" {
-				t.Errorf("a layer must end as USER oc (after any USER root), got %q", lastUser)
+			if lastUser != "rnes" {
+				t.Errorf("a layer must end as USER rnes (after any USER root), got %q", lastUser)
 			}
 		})
 	}

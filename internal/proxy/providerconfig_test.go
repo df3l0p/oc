@@ -8,7 +8,7 @@ import (
 )
 
 func TestEncodeProvidersIsOneNewlineTerminatedLine(t *testing.T) {
-	b, err := EncodeProviders([]ProviderConfig{{Name: "github", Token: "github_pat_x", Placeholder: "oc_placeholder_1"}})
+	b, err := EncodeProviders([]ProviderConfig{{Name: "github", Token: "github_pat_x", Placeholder: "rnes_placeholder_1"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -18,13 +18,13 @@ func TestEncodeProvidersIsOneNewlineTerminatedLine(t *testing.T) {
 }
 
 func TestReadProvidersRoundTripsAndBuildsTheGitHubProvider(t *testing.T) {
-	b, _ := EncodeProviders([]ProviderConfig{{Name: "github", Token: "github_pat_x", Placeholder: "oc_placeholder_1"}})
+	b, _ := EncodeProviders([]ProviderConfig{{Name: "github", Token: "github_pat_x", Placeholder: "rnes_placeholder_1"}})
 	// More input may follow the line (stdin isn't closed): only one line is read.
 	ps, err := ReadProviders(bufio.NewReader(bytes.NewReader(append(b, []byte("trailing")...))))
 	if err != nil {
 		t.Fatalf("ReadProviders: %v", err)
 	}
-	if len(ps) != 1 || ps[0].Name() != "github" || ps[0].Placeholder() != "oc_placeholder_1" {
+	if len(ps) != 1 || ps[0].Name() != "github" || ps[0].Placeholder() != "rnes_placeholder_1" {
 		t.Fatalf("providers = %+v", ps)
 	}
 }
@@ -71,7 +71,7 @@ func TestReadProvidersNamesTheDuplicate(t *testing.T) {
 }
 
 func TestInjectorFromStdinBuildsTheInjectorForExplicitHosts(t *testing.T) {
-	line, _ := EncodeProviders([]ProviderConfig{{Name: "github", Token: "github_pat_x", Placeholder: "oc_placeholder_1"}})
+	line, _ := EncodeProviders([]ProviderConfig{{Name: "github", Token: "github_pat_x", Placeholder: "rnes_placeholder_1"}})
 	pol := NewPolicy([]string{"github.com:443", "api.github.com:443"})
 	in, err := InjectorFromStdin(bufio.NewReader(bytes.NewReader(line)), pol, nil)
 	if err != nil {
@@ -85,7 +85,7 @@ func TestInjectorFromStdinBuildsTheInjectorForExplicitHosts(t *testing.T) {
 // A bound host the policy doesn't list explicitly is never decrypted, so the
 // credential could never be injected there: refuse to start.
 func TestInjectorFromStdinRefusesBoundHostsThePolicyDoesNotList(t *testing.T) {
-	line, _ := EncodeProviders([]ProviderConfig{{Name: "github", Token: "github_pat_x", Placeholder: "oc_placeholder_1"}})
+	line, _ := EncodeProviders([]ProviderConfig{{Name: "github", Token: "github_pat_x", Placeholder: "rnes_placeholder_1"}})
 	pol := NewPolicy([]string{"github.com:443"}) // no api.github.com
 	_, err := InjectorFromStdin(bufio.NewReader(bytes.NewReader(line)), pol, nil)
 	if err == nil || !strings.Contains(err.Error(), "api.github.com:443") {

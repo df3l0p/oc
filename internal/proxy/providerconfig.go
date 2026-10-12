@@ -8,7 +8,7 @@ import (
 	"io"
 )
 
-// ProviderConfig is one provider as oc hands it to oc-proxy on stdin.
+// ProviderConfig is one provider as rnes hands it to rnes-proxy on stdin.
 type ProviderConfig struct {
 	Name        string `json:"name"`
 	Token       string `json:"token"`

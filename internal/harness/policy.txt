@@ -1,7 +1,7 @@
 # What every sandbox may reach through its egress proxy, one host:port per
-# line; '#' starts a comment. oc appends the session's llama-server
+# line; '#' starts a comment. rnes appends the session's llama-server
 # (host.docker.internal:<port>) and mounts the result into the proxy as
-# /etc/oc-proxy/policy.txt. Everything else is blocked.
+# /etc/rnes-proxy/policy.txt. Everything else is blocked.
 
 # npm packages
 registry.npmjs.org:443

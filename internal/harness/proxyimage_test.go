@@ -61,7 +61,7 @@ func TestProxyContextIsTheEmbeddedSourceAsIs(t *testing.T) {
 		}
 		names[h.Name] = true
 	}
-	for _, want := range []string{"Dockerfile", "proxy.go", "cmd/oc-proxy/main.go"} {
+	for _, want := range []string{"Dockerfile", "proxy.go", "cmd/rnes-proxy/main.go"} {
 		if !names[want] {
 			t.Errorf("build context missing %s (has %v)", want, names)
 		}
@@ -83,19 +83,19 @@ func TestProxyContextCompilesStandalone(t *testing.T) {
 	dir := t.TempDir()
 	untar(t, archive, dir)
 
-	initCmd := exec.Command(goBin, "mod", "init", "github.com/df3l0p/oc/internal/proxy")
+	initCmd := exec.Command(goBin, "mod", "init", "github.com/df3l0p/rnes/internal/proxy")
 	initCmd.Dir = dir
 	if out, err := initCmd.CombinedOutput(); err != nil {
 		t.Fatalf("go mod init: %v\n%s", err, out)
 	}
 
-	out := filepath.Join(t.TempDir(), "oc-proxy")
-	buildCmd := exec.Command(goBin, "build", "-o", out, "./cmd/oc-proxy")
+	out := filepath.Join(t.TempDir(), "rnes-proxy")
+	buildCmd := exec.Command(goBin, "build", "-o", out, "./cmd/rnes-proxy")
 	buildCmd.Dir = dir
 	buildCmd.Env = append(append([]string{}, os.Environ()...),
 		"GOFLAGS=-mod=mod", "CGO_ENABLED=0", "GOWORK=off")
 	if combined, err := buildCmd.CombinedOutput(); err != nil {
-		t.Fatalf("go build ./cmd/oc-proxy: %v\n%s", err, combined)
+		t.Fatalf("go build ./cmd/rnes-proxy: %v\n%s", err, combined)
 	}
 }
 
@@ -119,8 +119,8 @@ func TestPrepareProxyImageBuildsFromStdinWhenMissing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepareProxyImage: %v", err)
 	}
-	if !strings.HasPrefix(tag, "oc-sandbox-proxy:") {
-		t.Errorf("tag %q must be oc-sandbox-proxy:<hash>", tag)
+	if !strings.HasPrefix(tag, "rnes-sandbox-proxy:") {
+		t.Errorf("tag %q must be rnes-sandbox-proxy:<hash>", tag)
 	}
 	got := calls(t, logPath)
 	if want := "build -t " + tag + " -"; len(got) != 2 || got[1] != want {
@@ -154,7 +154,7 @@ func TestPrepareProxyImageBuildFlagRebuildsWithoutCache(t *testing.T) {
 
 func TestPrepareProxyImageBuildFailureIsAnError(t *testing.T) {
 	fakeDocker(t, map[string]int{"image inspect": 1, "build": 1})
-	if _, err := prepareProxyImage(false); err == nil || !strings.Contains(err.Error(), "building oc-sandbox-proxy:") {
+	if _, err := prepareProxyImage(false); err == nil || !strings.Contains(err.Error(), "building rnes-sandbox-proxy:") {
 		t.Fatalf("error = %v, want one naming the proxy image", err)
 	}
 }

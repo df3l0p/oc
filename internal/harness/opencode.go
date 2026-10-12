@@ -6,12 +6,12 @@ import (
 	"os/exec"
 	"path/filepath"
 
-	"github.com/df3l0p/oc/internal/opencodeconfig"
+	"github.com/df3l0p/rnes/internal/opencodeconfig"
 )
 
 // Opencode drives opencode (github.com/sst/opencode) as a Harness. Its
 // config path is fixed to opencode's own default global config location, so
-// oc always merges into and points opencode at the same file it would use
+// rnes always merges into and points opencode at the same file it would use
 // on its own.
 type Opencode struct {
 	configPath string
@@ -63,7 +63,7 @@ func (o Opencode) Run(dir, providerKey, modelID string) error {
 	// opencode only reads configPath by default when it's left at opencode's
 	// own default global config path, which is exactly what configPath is
 	// here. OPENCODE_CONFIG is set anyway so this keeps working even if a
-	// future oc option makes configPath configurable again.
+	// future rnes option makes configPath configurable again.
 	cmd.Env = append(os.Environ(), "OPENCODE_CONFIG="+o.configPath)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout

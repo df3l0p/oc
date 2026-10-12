@@ -131,12 +131,12 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	hj, ok := w.(http.Hijacker)
 	if !ok {
-		http.Error(w, "oc-proxy: hijacking not supported", http.StatusInternalServerError)
+		http.Error(w, "rnes-proxy: hijacking not supported", http.StatusInternalServerError)
 		return
 	}
 	client, rw, err := hj.Hijack()
 	if err != nil {
-		http.Error(w, "oc-proxy: hijack: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "rnes-proxy: hijack: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	defer client.Close()
@@ -214,8 +214,8 @@ func closeWrite(c net.Conn) {
 
 // denied logs and refuses a destination the policy doesn't allow.
 func denied(w http.ResponseWriter, target string) {
-	log.Printf("oc-proxy: denied %s", target)
-	http.Error(w, "oc-proxy: host not allowed: "+target, http.StatusForbidden)
+	log.Printf("rnes-proxy: denied %s", target)
+	http.Error(w, "rnes-proxy: host not allowed: "+target, http.StatusForbidden)
 }
 
 // hostport normalizes u's authority to an explicit "host:port", defaulting
@@ -253,7 +253,7 @@ func removeHopByHop(h http.Header) {
 // transport dials 443.
 func (s *Server) handleForward(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Scheme != "http" {
-		http.Error(w, "oc-proxy: only http:// URLs are forwarded; use CONNECT for https", http.StatusBadRequest)
+		http.Error(w, "rnes-proxy: only http:// URLs are forwarded; use CONNECT for https", http.StatusBadRequest)
 		return
 	}
 	target := hostport(r.URL)

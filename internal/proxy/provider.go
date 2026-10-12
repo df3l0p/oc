@@ -113,12 +113,12 @@ func (in *Injector) OnRequest(r *http.Request, target string) error {
 		}
 		secret, err := p.Credential(r.Context())
 		if err != nil {
-			in.logf("oc-proxy: provider %s: credential unavailable for %s", p.Name(), target)
+			in.logf("rnes-proxy: provider %s: credential unavailable for %s", p.Name(), target)
 			return &CredentialError{Provider: p.Name(), Err: err}
 		}
 		auth = substitute(auth, p.Placeholder(), secret)
 		r.Header.Set("Authorization", auth)
-		in.logf("oc-proxy: provider %s: credential injected for %s", p.Name(), target)
+		in.logf("rnes-proxy: provider %s: credential injected for %s", p.Name(), target)
 	}
 	return nil
 }

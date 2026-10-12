@@ -7,12 +7,12 @@ import (
 	"os"
 	"os/exec"
 
-	"github.com/df3l0p/oc/internal/proxy"
+	"github.com/df3l0p/rnes/internal/proxy"
 )
 
 // proxyContext returns the proxy image's build context as a tar archive of
 // proxy.Source as-is: the package's source with its Dockerfile at the root.
-// oc usually runs without a checkout, so the embedded copy is the only one it
+// rnes usually runs without a checkout, so the embedded copy is the only one it
 // has; streaming it to `docker build -` means nothing is written to disk.
 // The archive is deterministic (embedded files carry no timestamps), so it
 // also serves as the image tag's hash input.
@@ -43,7 +43,7 @@ func prepareProxyImage(build bool) (string, error) {
 		return tag, nil
 	}
 
-	fmt.Fprintf(os.Stderr, "oc: building %s\n", tag)
+	fmt.Fprintf(os.Stderr, "rnes: building %s\n", tag)
 	args := []string{"build", "-t", tag, "-"}
 	if build {
 		args = []string{"build", "--no-cache", "-t", tag, "-"}

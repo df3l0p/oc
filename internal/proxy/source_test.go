@@ -9,7 +9,7 @@ import (
 )
 
 func TestSourceEmbedsThePackageAndItsCommand(t *testing.T) {
-	for _, name := range []string{"proxy.go", "policy.go", "source.go", "cmd/oc-proxy/main.go", "Dockerfile"} {
+	for _, name := range []string{"proxy.go", "policy.go", "source.go", "cmd/rnes-proxy/main.go", "Dockerfile"} {
 		if _, err := fs.Stat(Source, name); err != nil {
 			t.Errorf("Source is missing %s: %v", name, err)
 		}
@@ -36,7 +36,7 @@ func TestSourceImportsOnlyTheStandardLibrary(t *testing.T) {
 		for _, imp := range f.Imports {
 			p := strings.Trim(imp.Path.Value, `"`)
 			isStdlib := !strings.Contains(strings.SplitN(p, "/", 2)[0], ".")
-			if !isStdlib && p != "github.com/df3l0p/oc/internal/proxy" {
+			if !isStdlib && p != "github.com/df3l0p/rnes/internal/proxy" {
 				t.Errorf("%s imports %s; the proxy may import only the standard library and itself", path, p)
 			}
 		}
@@ -55,7 +55,7 @@ func TestDockerfileBuildsTheEmbeddedCommandFromThePackageRoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"go mod init github.com/df3l0p/oc/internal/proxy", "./cmd/oc-proxy"} {
+	for _, want := range []string{"go mod init github.com/df3l0p/rnes/internal/proxy", "./cmd/rnes-proxy"} {
 		if !strings.Contains(string(dockerfile), want) {
 			t.Errorf("Dockerfile doesn't contain %q:\n%s", want, dockerfile)
 		}
