@@ -69,8 +69,8 @@ config resolution would otherwise pick something else up.
 
 ### Environment
 
-| Variable          | Description |
-| ----------------- | ----------- |
+| Variable            | Description |
+| ------------------- | ----------- |
 | `RNES_GITHUB_TOKEN` | GitHub token the sandbox's proxy injects for `git` and `gh` (requires `-sandbox`; see *GitHub credentials* below). Prefer a fine-grained token; to reuse your `gh` login, `export RNES_GITHUB_TOKEN=$(gh auth token)`. |
 
 ### Sharing a llama-server across sessions

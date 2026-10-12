@@ -66,11 +66,11 @@ func (c cliConfig) validate() error {
 const envHelp = `
 Environment:
   RNES_GITHUB_TOKEN   GitHub token the sandbox's proxy injects for git and gh at
-                    github.com and api.github.com (requires -sandbox). The sandbox
-                    only ever holds a placeholder. Prefer a fine-grained token
-                    scoped to what the agent needs.
-                    To reuse your logged-in gh account instead (broad scopes: the
-                    agent can do anything your account can):
+                      github.com and api.github.com (requires -sandbox). The sandbox
+                      only ever holds a placeholder. Prefer a fine-grained token
+                      scoped to what the agent needs.
+                      To reuse your logged-in gh account instead (broad scopes: the
+                      agent can do anything your account can):
                         export RNES_GITHUB_TOKEN=$(gh auth token)
 `
 
