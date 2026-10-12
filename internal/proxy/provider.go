@@ -66,6 +66,12 @@ func NewGitHubProvider(token, placeholder string) (*StaticProvider, error) {
 	return NewStaticProvider("github", []string{"github.com:443", "api.github.com:443"}, token, placeholder)
 }
 
+// NewOpenRouterProvider is the OpenRouter API key provider. opencode's built-in
+// openrouter provider sends the key as a Bearer token.
+func NewOpenRouterProvider(key, placeholder string) (*StaticProvider, error) {
+	return NewStaticProvider("openrouter", []string{"openrouter.ai:443"}, key, placeholder)
+}
+
 func (p *StaticProvider) Name() string        { return p.name }
 func (p *StaticProvider) Hosts() []string     { return p.hosts }
 func (p *StaticProvider) Placeholder() string { return p.placeholder }

@@ -16,10 +16,29 @@ func TestValidateRejectsSandboxOnlyFlagsWithoutSandbox(t *testing.T) {
 			t.Errorf("validate(%+v) = nil, want an error", cfg)
 		}
 	}
-	for _, cfg := range []cliConfig{{}, {sandbox: true}, {sandbox: true, image: "x", build: true, allNet: true, noInspect: true}} {
+	for _, cfg := range []cliConfig{{}, {sandbox: true}, {sandboxUpdate: true}, {sandbox: true, image: "x", build: true, allNet: true, noInspect: true}} {
 		if err := cfg.validate(); err != nil {
 			t.Errorf("validate(%+v) = %v, want nil", cfg, err)
 		}
+	}
+}
+
+// TestSandboxUpdateImpliesSandboxAndBuild checks that -sandbox-update turns
+// into a from-scratch sandbox rebuild, so prepare runs and validate passes
+// for the sandbox-only flags given alongside it.
+func TestSandboxUpdateImpliesSandboxAndBuild(t *testing.T) {
+	c := cliConfig{sandboxUpdate: true, image: "x"}
+	c.applyImplications()
+	if !c.sandbox || !c.build {
+		t.Fatalf("applyImplications = sandbox=%v build=%v, want both true", c.sandbox, c.build)
+	}
+	if err := c.validate(); err != nil {
+		t.Errorf("validate(%+v) = %v, want nil", c, err)
+	}
+	c2 := cliConfig{}
+	c2.applyImplications()
+	if c2.sandbox || c2.build {
+		t.Errorf("applyImplications without -sandbox-update = sandbox=%v build=%v, want both false", c2.sandbox, c2.build)
 	}
 }
 
@@ -106,5 +125,68 @@ func TestTokenWarningFlagsAnythingButAFineGrainedToken(t *testing.T) {
 	}
 	if w := tokenWarning("github_pat_abc"); w != "" {
 		t.Errorf("tokenWarning(fine-grained) = %q, want none", w)
+	}
+}
+
+// TestSessionCredentialIsKeptOnlyForASession checks that a credential is
+// dropped when no session will use it: without -sandbox, and with
+// -sandbox-update, which exits before one starts.
+func TestSessionCredentialIsKeptOnlyForASession(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cfg  cliConfig
+		want string
+	}{
+		{"no sandbox", cliConfig{}, ""},
+		{"sandbox", cliConfig{sandbox: true}, "tok"},
+		{"sandbox-update", cliConfig{sandbox: true, sandboxUpdate: true}, ""},
+	} {
+		if got := tc.cfg.sessionCredential("RNES_X", "tok"); got != tc.want {
+			t.Errorf("%s: credential = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestOpenRouterKeyFromEnvReadsAndUnsets(t *testing.T) {
+	t.Setenv("RNES_OPENROUTER_API_KEY", "sk-or-x")
+	if got := openRouterKeyFromEnv(); got != "sk-or-x" {
+		t.Errorf("got %q", got)
+	}
+	if v, ok := os.LookupEnv("RNES_OPENROUTER_API_KEY"); ok {
+		t.Errorf("RNES_OPENROUTER_API_KEY is still set (%q): child processes would inherit it", v)
+	}
+}
+
+func TestValidateRejectsAnOpenRouterKeyWithNoInspect(t *testing.T) {
+	err := cliConfig{sandbox: true, noInspect: true, openrouterKey: "sk-or-x"}.validate()
+	if err == nil || !strings.Contains(err.Error(), "RNES_OPENROUTER_API_KEY") {
+		t.Errorf("err = %v", err)
+	}
+}
+
+func TestValidateRejectsAnUnusableOpenRouterKey(t *testing.T) {
+	err := cliConfig{sandbox: true, openrouterKey: "sk-or-x\n"}.validate()
+	if err == nil || !strings.Contains(err.Error(), "RNES_OPENROUTER_API_KEY") || strings.Contains(err.Error(), "sk-or-x") {
+		t.Errorf("err = %v, want one naming RNES_OPENROUTER_API_KEY and not echoing it", err)
+	}
+}
+
+func TestActiveProvidersListsOnlyTheSetOnes(t *testing.T) {
+	if got := activeProviders(cliConfig{}); len(got) != 0 {
+		t.Errorf("none set: %v", got)
+	}
+	got := activeProviders(cliConfig{githubToken: "a", openrouterKey: "b"})
+	if strings.Join(got, ",") != "github,openrouter" {
+		t.Errorf("both set: %v", got)
+	}
+}
+
+func TestUsageDocumentsTheOpenRouterKey(t *testing.T) {
+	var buf bytes.Buffer
+	usage(&buf)
+	for _, want := range []string{"RNES_OPENROUTER_API_KEY", "credit limit", "-sandbox"} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("usage is missing %q:\n%s", want, buf.String())
+		}
 	}
 }

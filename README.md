@@ -57,6 +57,7 @@ This starts (or reuses) a llama-server serving the default model, merges a
 | `-sandbox`  | off                                               | Run the agent in a Docker container (see below)  |
 | `-image`    | `default`                                         | Bundled sandbox image to use (see below; requires `-sandbox`) |
 | `-build`    | off                                               | Rebuild the sandbox image even if it exists (requires `-sandbox`) |
+| `-sandbox-update` | off                                         | Rebuild the sandbox images (all, or just `-image`) from scratch, then exit without running the agent (implies `-sandbox` and `-build`) |
 | `-all-net`  | off                                               | Let the sandbox reach any public host, not just the default allow-list (requires `-sandbox`; see below) |
 | `-no-inspect` | off                                             | Don't decrypt the sandbox's HTTPS in the proxy; tunnel it unread (requires `-sandbox`; see below) |
 
@@ -69,9 +70,10 @@ config resolution would otherwise pick something else up.
 
 ### Environment
 
-| Variable            | Description |
-| ------------------- | ----------- |
-| `RNES_GITHUB_TOKEN` | GitHub token the sandbox's proxy injects for `git` and `gh` (requires `-sandbox`; see *GitHub credentials* below). Prefer a fine-grained token; to reuse your `gh` login, `export RNES_GITHUB_TOKEN=$(gh auth token)`. |
+| Variable                  | Description |
+| ------------------------- | ----------- |
+| `RNES_GITHUB_TOKEN`       | GitHub token the sandbox's proxy injects for `git` and `gh` (requires `-sandbox`; see *GitHub credentials* below). Prefer a fine-grained token; to reuse your `gh` login, `export RNES_GITHUB_TOKEN=$(gh auth token)`. |
+| `RNES_OPENROUTER_API_KEY` | OpenRouter API key the sandbox's proxy injects at `openrouter.ai` (requires `-sandbox`; see *OpenRouter models* below). Use a dedicated key with a low credit limit. |
 
 ### Sharing a llama-server across sessions
 
@@ -109,7 +111,9 @@ opencode).
   from its Dockerfile (a build failure is an error). `-build` rebuilds the
   images from scratch, ignoring docker's layer cache, so it also picks up new
   apt package versions and a newer `opencode-ai`; without it, an existing image
-  is reused indefinitely.
+  is reused indefinitely. `-sandbox-update` is the same rebuild, but of every bundled
+  image (or only `-image`'s, if given), and it exits instead of running a
+  session (it implies `-sandbox` and `-build`).
   Images are tagged `rnes-sandbox-<name>:<hash>` from the Dockerfile's contents
   (and that of the base), so a changed Dockerfile builds a new image and an
   unchanged one is reused. Note the build itself still fetches the
@@ -197,6 +201,30 @@ opencode).
     proxy doesn't restrict reads or writes. Use a fine-grained token scoped to
     what the agent needs. `export RNES_GITHUB_TOKEN=$(gh auth token)` reuses your
     `gh` login, whose scopes are broad.
+  - Requires `-sandbox` (ignored with a note otherwise) and TLS interception:
+    `rnes` refuses `-no-inspect` while the variable is set.
+- **OpenRouter models:** with `RNES_OPENROUTER_API_KEY` set, the sandbox can use
+  OpenRouter models alongside the local llama-server, without the key ever being
+  inside it. Local llama stays the default (`-model` is unchanged); switch to
+  an OpenRouter model inside opencode, which ships `openrouter` as a built-in
+  provider. Unset, nothing changes: no extra provider, no extra policy entry.
+  - *Mechanism:* the same as the GitHub token. `rnes` reads and unsets the
+    variable, sends the key to the proxy on stdin, and gives the sandbox only
+    `OPENROUTER_API_KEY=<placeholder>`. The proxy swaps the placeholder for the
+    key in the `Authorization` header, only at `openrouter.ai:443`. That host is
+    added to the proxy's policy (so it is decrypted and logged) only when the
+    key is set. Streaming completions pass through. `rnes` prints which
+    credential providers are active at startup.
+  - *Curating models:* add `provider.openrouter.models` to your host
+    `opencode.jsonc`; the sandbox config starts from it. Keep keys out of that
+    file: with `RNES_OPENROUTER_API_KEY` set, `rnes` removes a literal
+    `provider.openrouter.options.apiKey` from the sandbox's copy (with a
+    warning), because it would override the placeholder.
+  - *Scope:* the key is protected from theft, not from use: an agent in the
+    sandbox can make OpenRouter calls through the proxy. **Use a dedicated key
+    with a low credit limit.**
+  - *Privacy:* prompts and code context leave your machine whenever an
+    OpenRouter model is used. The proxy log shows requests by host.
   - Requires `-sandbox` (ignored with a note otherwise) and TLS interception:
     `rnes` refuses `-no-inspect` while the variable is set.
 - Session data inside the container is discarded on exit (`--rm`).

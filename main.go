@@ -34,6 +34,9 @@ type cliConfig struct {
 	sandbox bool
 	image   string
 	build   bool
+	// sandboxUpdate rebuilds the sandbox images and exits without running the
+	// agent. applyImplications turns it into sandbox and build.
+	sandboxUpdate bool
 	// allNet lets the sandbox reach any public host, not just the
 	// default allow-list.
 	allNet bool
@@ -42,6 +45,8 @@ type cliConfig struct {
 	// githubToken is RNES_GITHUB_TOKEN, read (and unset) at startup; empty means
 	// no GitHub credentials. It is only kept with -sandbox.
 	githubToken string
+	// openrouterKey is RNES_OPENROUTER_API_KEY, handled like githubToken.
+	openrouterKey string
 }
 
 const defaultHost = "127.0.0.1"
@@ -59,7 +64,27 @@ func (c cliConfig) validate() error {
 			return fmt.Errorf("RNES_GITHUB_TOKEN is set, but -no-inspect stops the proxy from decrypting HTTPS, so it couldn't inject the token; unset one of them")
 		}
 	}
+	if c.openrouterKey != "" {
+		if err := proxy.ValidateToken(c.openrouterKey); err != nil {
+			return fmt.Errorf("RNES_OPENROUTER_API_KEY is unusable: %w", err)
+		}
+		if c.noInspect {
+			return fmt.Errorf("RNES_OPENROUTER_API_KEY is set, but -no-inspect stops the proxy from decrypting HTTPS, so it couldn't inject the key; unset one of them")
+		}
+	}
 	return nil
+}
+
+// applyImplications derives flags implied by others: -sandbox-update is a
+// sandbox action, and refreshing an image means rebuilding it even if it
+// exists (-build's behaviour), since the tags only change with the
+// Dockerfiles — a cached or existing image would keep serving the old
+// packages and the old opencode.
+func (c *cliConfig) applyImplications() {
+	if c.sandboxUpdate {
+		c.sandbox = true
+		c.build = true
+	}
 }
 
 // envHelp is the Environment section of -h.
@@ -72,6 +97,13 @@ Environment:
                       To reuse your logged-in gh account instead (broad scopes: the
                       agent can do anything your account can):
                         export RNES_GITHUB_TOKEN=$(gh auth token)
+  RNES_OPENROUTER_API_KEY
+                      OpenRouter API key the sandbox's proxy injects at openrouter.ai
+                      (requires -sandbox). The sandbox only ever holds a placeholder,
+                      but an agent in it can still make OpenRouter calls, so use a
+                      dedicated key with a low credit limit. Local llama stays the
+                      default; switch to an openrouter model inside opencode. Prompts
+                      and code context leave your machine when you do.
 `
 
 // usage is flag.Usage: the flag defaults followed by the environment.
@@ -92,12 +124,49 @@ func tokenWarning(token string) string {
 	return "RNES_GITHUB_TOKEN isn't a fine-grained token (github_pat_…), so it can't be limited to specific repositories; a fine-grained token is safer"
 }
 
+// sessionCredential returns val only when a session will use it: it needs a
+// sandbox, and -sandbox-update exits before one starts. env names the variable
+// in the note printed when it is dropped.
+func (c cliConfig) sessionCredential(env, val string) string {
+	switch {
+	case val == "":
+	case !c.sandbox:
+		fmt.Fprintf(os.Stderr, "rnes: note: %s is ignored without -sandbox\n", env)
+	case c.sandboxUpdate:
+		fmt.Fprintf(os.Stderr, "rnes: note: %s is ignored with -sandbox-update (no session runs)\n", env)
+	default:
+		return val
+	}
+	return ""
+}
+
 // githubTokenFromEnv returns RNES_GITHUB_TOKEN and removes it from rnes's
 // environment, so nothing rnes starts afterwards (docker, llama-server) inherits it.
 func githubTokenFromEnv() string {
 	tok := os.Getenv("RNES_GITHUB_TOKEN")
 	os.Unsetenv("RNES_GITHUB_TOKEN")
 	return tok
+}
+
+// openRouterKeyFromEnv returns RNES_OPENROUTER_API_KEY and removes it from rnes's
+// environment, like githubTokenFromEnv.
+func openRouterKeyFromEnv() string {
+	key := os.Getenv("RNES_OPENROUTER_API_KEY")
+	os.Unsetenv("RNES_OPENROUTER_API_KEY")
+	return key
+}
+
+// activeProviders names the credential providers a session will use, for the
+// startup line.
+func activeProviders(c cliConfig) []string {
+	var names []string
+	if c.githubToken != "" {
+		names = append(names, "github")
+	}
+	if c.openrouterKey != "" {
+		names = append(names, "openrouter")
+	}
+	return names
 }
 
 // listenHost is the address llama-server listens on, and that rnes itself uses
@@ -127,6 +196,7 @@ func parseFlags() (cliConfig, error) {
 	flag.BoolVar(&cfg.sandbox, "sandbox", false, "run the harness in a Docker container that mounts the current directory")
 	flag.StringVar(&cfg.image, "image", "", "bundled sandbox image to use (default "+images.Default+"; available: "+strings.Join(images.Names(), ", ")+"); requires -sandbox")
 	flag.BoolVar(&cfg.build, "build", false, "rebuild the sandbox image from scratch, without docker's layer cache, even if it exists (it is built when missing, never pulled); requires -sandbox")
+	flag.BoolVar(&cfg.sandboxUpdate, "sandbox-update", false, "rebuild the sandbox images (every bundled one, or just -image if given; plus the base and the proxy image) from scratch, without docker's layer cache, so it picks up new apt packages and a newer opencode-ai, then exit without running the agent; implies -sandbox")
 	flag.BoolVar(&cfg.allNet, "all-net", false, "let the sandbox reach any public host over http(s), not just the default allow-list (your machine and LAN stay blocked apart from llama-server); requires -sandbox")
 	flag.BoolVar(&cfg.noInspect, "no-inspect", false, "don't terminate TLS in the sandbox's proxy: tunnel every HTTPS connection unread (by default the proxy decrypts the allow-listed hosts with a CA made for the session, and logs each request); requires -sandbox")
 	flag.Usage = func() { usage(os.Stderr) }
@@ -136,11 +206,9 @@ func parseFlags() (cliConfig, error) {
 			cfg.hostSet = true
 		}
 	})
-	cfg.githubToken = githubTokenFromEnv()
-	if cfg.githubToken != "" && !cfg.sandbox {
-		fmt.Fprintln(os.Stderr, "rnes: note: RNES_GITHUB_TOKEN is ignored without -sandbox")
-		cfg.githubToken = ""
-	}
+	cfg.applyImplications()
+	cfg.githubToken = cfg.sessionCredential("RNES_GITHUB_TOKEN", githubTokenFromEnv())
+	cfg.openrouterKey = cfg.sessionCredential("RNES_OPENROUTER_API_KEY", openRouterKeyFromEnv())
 	return cfg, cfg.validate()
 }
 
@@ -157,7 +225,7 @@ func run() error {
 		return err
 	}
 
-	h, err := harness.New(cfg.harness, harness.Options{Sandbox: cfg.sandbox, Image: cfg.image, Build: cfg.build, AllNet: cfg.allNet, NoInspect: cfg.noInspect, GitHubToken: cfg.githubToken})
+	h, err := harness.New(cfg.harness, harness.Options{Sandbox: cfg.sandbox, Image: cfg.image, Build: cfg.build, AllNet: cfg.allNet, NoInspect: cfg.noInspect, GitHubToken: cfg.githubToken, OpenRouterKey: cfg.openrouterKey})
 	if err != nil {
 		return err
 	}
@@ -167,15 +235,33 @@ func run() error {
 			fmt.Fprintln(os.Stderr, "rnes: warning:", w)
 		}
 	}
+	if cfg.openrouterKey != "" {
+		fmt.Fprintln(os.Stderr, "rnes: OpenRouter key: the sandbox proxy injects it at openrouter.ai; the sandbox only holds a placeholder (use a dedicated key with a low credit limit). Prompts leave your machine when you pick an openrouter model.")
+	}
+	if names := activeProviders(cfg); len(names) > 0 {
+		fmt.Fprintln(os.Stderr, "rnes: credential providers:", strings.Join(names, ", "))
+	}
 	if err := h.Available(); err != nil {
 		return err
 	}
 	// Before starting any server, so a failed image pull/build leaves nothing
 	// running.
-	if p, ok := h.(harness.Preparer); ok {
+	// -sandbox-update without -image refreshes every bundled image, not just
+	// the default.
+	if a, ok := h.(harness.AllPreparer); ok && cfg.sandboxUpdate && cfg.image == "" {
+		if err := a.PrepareAll(); err != nil {
+			return err
+		}
+	} else if p, ok := h.(harness.Preparer); ok {
 		if err := p.Prepare(); err != nil {
 			return err
 		}
+	}
+	// -sandbox-update is done once the images are freshly built: no server,
+	// no session.
+	if cfg.sandboxUpdate {
+		fmt.Fprintln(os.Stderr, "rnes: sandbox images are up to date")
+		return nil
 	}
 
 	// rnes talks to the server on the address it listens on: a server bound to a

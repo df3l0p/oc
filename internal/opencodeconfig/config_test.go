@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -165,5 +166,19 @@ func TestStripJSONComments(t *testing.T) {
 	}
 	if m["b"] != "value with /* not a comment */ still" {
 		t.Errorf("string content corrupted: %v", m["b"])
+	}
+}
+
+func TestDropProviderOptionRemovesOnlyTheNamedOption(t *testing.T) {
+	in := []byte(`{"model":"m","provider":{"openrouter":{"options":{"apiKey":"sk-or-REAL","x":1},"models":{"a":{}}}}}`)
+	out, dropped, err := DropProviderOption(in, "openrouter", "apiKey")
+	if err != nil || !dropped {
+		t.Fatalf("dropped = %v, err = %v", dropped, err)
+	}
+	if strings.Contains(string(out), "sk-or-REAL") || !strings.Contains(string(out), `"x": 1`) || !strings.Contains(string(out), `"models"`) || !strings.Contains(string(out), `"model"`) {
+		t.Errorf("out = %s", out)
+	}
+	if _, dropped, _ := DropProviderOption(out, "openrouter", "apiKey"); dropped {
+		t.Error("nothing left to drop, but dropped = true")
 	}
 }

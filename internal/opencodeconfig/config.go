@@ -190,3 +190,24 @@ func stripJSONComments(src []byte) []byte {
 	}
 	return out
 }
+
+// DropProviderOption removes provider[providerKey].options[option] from the
+// JSON config in raw, reporting whether it was there. Other keys are untouched.
+func DropProviderOption(raw []byte, providerKey, option string) ([]byte, bool, error) {
+	var config map[string]interface{}
+	if err := json.Unmarshal(raw, &config); err != nil {
+		return nil, false, fmt.Errorf("parsing: %w", err)
+	}
+	providers, _ := config["provider"].(map[string]interface{})
+	block, _ := providers[providerKey].(map[string]interface{})
+	options, _ := block["options"].(map[string]interface{})
+	if _, ok := options[option]; !ok {
+		return raw, false, nil
+	}
+	delete(options, option)
+	out, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return nil, false, fmt.Errorf("encoding: %w", err)
+	}
+	return append(out, '\n'), true, nil
+}
