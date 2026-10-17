@@ -110,11 +110,14 @@ func TestMergeIsIdempotentAndKeepsOtherProviders(t *testing.T) {
 	}
 }
 
-func TestMergeReplacesAStaleLegacyProviderBlock(t *testing.T) {
+func TestMergeLeavesALegacyProviderBlockAlone(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "opencode.jsonc")
 	// llama-cpp as an older rnes (or v1-era opencode) wrote it, plus an
-	// unrelated v2 provider that must survive.
+	// unrelated v2 provider. The stale legacy entry stays where it is:
+	// opencode resolves a provider/providers conflict in favor of the
+	// native providers block, so the entry is inert, and rnes doesn't
+	// rewrite config it doesn't manage.
 	original := `{"provider": {"llama-cpp": {"npm": "@ai-sdk/openai-compatible", "options": {"baseURL": "http://old:1/v1"}}}, "providers": {"other": {"name": "x"}}}`
 	if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
 		t.Fatal(err)
@@ -133,8 +136,9 @@ func TestMergeReplacesAStaleLegacyProviderBlock(t *testing.T) {
 	if err := json.Unmarshal(out, &got); err != nil {
 		t.Fatalf("output is not valid JSON: %v\n%s", err, out)
 	}
-	if _, ok := got["provider"]; ok {
-		t.Errorf("expected the emptied legacy provider key to be gone, got %v", got["provider"])
+	legacy := got["provider"].(map[string]interface{})
+	if _, ok := legacy["llama-cpp"]; !ok {
+		t.Error("expected the stale legacy llama-cpp block to be left alone")
 	}
 	providers := got["providers"].(map[string]interface{})
 	if _, ok := providers["other"]; !ok {

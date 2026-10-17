@@ -25,9 +25,9 @@ type Harness interface {
 	// and blocking until it exits. Where the harness runs against its own
 	// session-local configuration (the sandbox), it starts on modelID (one
 	// of the ids given to Configure, served under providerKey); where it
-	// runs against the user's own configuration, the model is left to the
-	// agent's session UI, since v2 has no model flag on its full TUI and
-	// the user's configured default must not be rewritten.
+	// runs against the user's own configuration, the harness must not
+	// rewrite the user's configured default, so modelID is advisory and the
+	// model may be left to the agent's session UI.
 	Run(dir, providerKey, modelID string) error
 }
 

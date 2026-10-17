@@ -118,18 +118,6 @@ func render(raw []byte, providerKey string, provider Provider) ([]byte, error) {
 	providers[providerKey] = providerBlock
 	config["providers"] = providers
 
-	// A v1-era opencode (or an older rnes) may have left the same provider
-	// under the singular legacy "provider" key. Delete that entry so the
-	// provider isn't registered twice, dropping the key itself when it
-	// becomes empty. Other providers' legacy blocks are left alone: v2
-	// still accepts them.
-	if legacy, ok := config["provider"].(map[string]interface{}); ok {
-		delete(legacy, providerKey)
-		if len(legacy) == 0 {
-			delete(config, "provider")
-		}
-	}
-
 	out, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("encoding: %w", err)
@@ -206,9 +194,11 @@ func stripJSONComments(src []byte) []byte {
 }
 
 // DropProviderOption removes providers[providerKey].settings[option] from
-// the JSON config in raw, reporting whether it was there. For configs last
-// written before the v2 provider migration it also removes the legacy
-// provider[providerKey].options[option]. Other keys are untouched.
+// the JSON config in raw, reporting whether it was there. It also removes
+// the legacy provider[providerKey].options[option] written before the v2
+// config migration: the named option is what the sandbox must not see (an
+// openrouter apiKey), and a config last written by the v1-era rnes would
+// otherwise carry it into the container. Other keys are untouched.
 func DropProviderOption(raw []byte, providerKey, option string) ([]byte, bool, error) {
 	var config map[string]interface{}
 	if err := json.Unmarshal(raw, &config); err != nil {

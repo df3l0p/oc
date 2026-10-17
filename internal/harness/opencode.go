@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/df3l0p/rnes/internal/opencodeconfig"
 )
@@ -48,6 +49,27 @@ func opencodeProvider(baseURL string, modelIDs []string) opencodeconfig.Provider
 func (o Opencode) Available() error {
 	if _, err := exec.LookPath("opencode"); err != nil {
 		return fmt.Errorf("opencode not found on PATH: %w", err)
+	}
+	out, err := exec.Command("opencode", "--version").Output()
+	if err != nil {
+		return fmt.Errorf("running opencode --version: %w", err)
+	}
+	return opencodeIsV2(string(out))
+}
+
+// opencodeIsV2 reports an error unless out (the output of opencode
+// --version) says version 2. It tolerates the spellings "opencode
+// v2.0.32", "v2.0.32" and "2.0.32"; anything else, including a v1 binary,
+// is rejected.
+func opencodeIsV2(out string) error {
+	var ver string
+	for _, f := range strings.Fields(out) {
+		if strings.HasPrefix(f, "v") || (f != "" && f[0] >= '0' && f[0] <= '9') {
+			ver = strings.TrimPrefix(f, "v")
+		}
+	}
+	if !strings.HasPrefix(ver, "2.") {
+		return fmt.Errorf("rnes requires opencode v2, got %q", strings.TrimSpace(out))
 	}
 	return nil
 }

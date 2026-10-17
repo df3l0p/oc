@@ -322,10 +322,10 @@ func (s *Sandbox) Run(dir, providerKey, modelID string) error {
 	}
 	defer os.Remove(s.generated)
 
-	// v2's full TUI has no model flag (v1's -m is gone), so the session's
-	// model rides in the generated config's top-level "model" default. The
-	// config is session-local and mounted read-only into the container, so
-	// nothing outlives the session.
+	// The harness's session UI may not accept a model flag, so the
+	// session's model rides in the generated config's top-level "model"
+	// default. The config is session-local and mounted read-only into the
+	// container, so nothing outlives the session.
 	raw, err := os.ReadFile(s.generated)
 	if err != nil {
 		return fmt.Errorf("reading generated config: %w", err)
