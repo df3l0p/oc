@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/df3l0p/rnes/internal/skills"
 )
 
 // fakeDocker puts a `docker` shell script on PATH that appends each
@@ -588,5 +590,106 @@ func TestConfigureDropsALiteralOpenRouterKeyFromTheHostConfig(t *testing.T) {
 		if gone := !strings.Contains(string(b), "sk-or-REAL"); gone != wantGone {
 			t.Errorf("key %q: literal key removed = %v, want %v", key, gone, wantGone)
 		}
+	}
+}
+
+func TestSandboxRunArgsWithoutSkillsAreUnchanged(t *testing.T) {
+	s := newSandbox(Options{Sandbox: true}, "")
+	s.image, s.generated = "rnes-sandbox-default:x", "/tmp/cfg"
+	pn := &proxyNet{network: "rnes-net-1", container: "rnes-proxy-1"}
+	joined := strings.Join(s.runArgs("rnes-1-aa", "/work/proj", "llama-cpp", "m1", pn, false), " ")
+	for _, bad := range []string{"--mount", ".config", "skills"} {
+		if strings.Contains(joined, bad) {
+			t.Errorf("without skills, args must not mention %q: %s", bad, joined)
+		}
+	}
+}
+
+func TestSandboxRunArgsMountEachSkillReadOnly(t *testing.T) {
+	s := newSandbox(Options{Sandbox: true, Skills: []skills.Skill{
+		{Name: "foo", Dir: "/host/skills/foo"},
+		{Name: "bar", Dir: "/host/odd,path/bar"},
+	}}, "")
+	s.image, s.generated = "rnes-sandbox-default:x", "/tmp/cfg"
+	s.configHome = "/tmp/rnes-sandbox-home-config-1"
+	pn := &proxyNet{network: "rnes-net-1", container: "rnes-proxy-1"}
+	args := s.runArgs("rnes-1-aa", "/work/proj", "llama-cpp", "m1", pn, false)
+	joined := strings.Join(args, " ")
+	for _, want := range []string{
+		"--mount type=bind,source=/tmp/rnes-sandbox-home-config-1,target=/home/rnes/.config ",
+		"--mount type=bind,source=/host/skills/foo,target=/home/rnes/.config/opencode/skills/foo,readonly ",
+		// CSV-quoted, as docker parses --mount.
+		`--mount type=bind,"source=/host/odd,path/bar",target=/home/rnes/.config/opencode/skills/bar,readonly `,
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("args missing %q:\n%s", want, joined)
+		}
+	}
+	// The mounts must come before the image: after it they'd be the agent's args.
+	image := strings.Index(joined, "rnes-sandbox-default:x")
+	if i := strings.LastIndex(joined, "--mount"); i > image {
+		t.Errorf("skill mounts must precede the image: %s", joined)
+	}
+	// The ~/.config staging mount is the only writable one; every skill is ro.
+	for i, a := range args {
+		if a == "--mount" && strings.Contains(args[i+1], "/opencode/skills/") && !strings.HasSuffix(args[i+1], ",readonly") {
+			t.Errorf("skill mount isn't read-only: %s", args[i+1])
+		}
+	}
+}
+
+func TestSandboxRunStagesAWritableConfigHomeAndRemovesIt(t *testing.T) {
+	logPath := fakeDockerProxy(t, nil, nil)
+	t.Setenv("TMPDIR", t.TempDir())
+	skillDir := t.TempDir()
+	s := newSandbox(Options{Sandbox: true, Skills: []skills.Skill{{Name: "foo", Dir: skillDir}}}, filepath.Join(t.TempDir(), "absent.jsonc"))
+	if err := s.Configure("llama-cpp", "http://127.0.0.1:8080", []string{"m"}); err != nil {
+		t.Fatal(err)
+	}
+	s.image, s.proxyImage = "rnes-sandbox-default:test", "rnes-sandbox-proxy:test"
+
+	var staged string
+	if err := s.Run(t.TempDir(), "llama-cpp", "m"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	for _, c := range calls(t, logPath) {
+		if strings.HasPrefix(c, "run --rm") {
+			for _, f := range strings.Fields(c) {
+				if strings.HasPrefix(f, "type=bind,source=") && strings.HasSuffix(f, ",target=/home/rnes/.config") {
+					staged = strings.TrimSuffix(strings.TrimPrefix(f, "type=bind,source="), ",target=/home/rnes/.config")
+				}
+			}
+			if !strings.Contains(c, "source="+skillDir+",target=/home/rnes/.config/opencode/skills/foo,readonly") {
+				t.Errorf("the sandbox run doesn't mount the skill read-only: %s", c)
+			}
+		}
+	}
+	if staged == "" || s.configHome != staged {
+		t.Fatalf("no ~/.config staging mount found (configHome %q, staged %q)", s.configHome, staged)
+	}
+	if _, err := os.Stat(staged); !os.IsNotExist(err) {
+		t.Errorf("the staging directory must be removed after Run, stat err = %v", err)
+	}
+}
+
+func TestStageConfigHomeHasTheMountPointsAndIsTheUsers(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	dir, err := stageConfigHome([]skills.Skill{{Name: "foo"}, {Name: "bar"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	for _, p := range []string{dir, filepath.Join(dir, "opencode"), filepath.Join(dir, "opencode", "skills", "foo"), filepath.Join(dir, "opencode", "skills", "bar")} {
+		fi, err := os.Stat(p)
+		if err != nil || !fi.IsDir() {
+			t.Fatalf("%s: %v", p, err)
+		}
+		// Writable by the user the container runs as (the same uid).
+		if fi.Mode().Perm()&0o700 != 0o700 {
+			t.Errorf("%s mode = %v, want the owner to have rwx", p, fi.Mode().Perm())
+		}
+	}
+	if fi, _ := os.Stat(dir); fi.Mode().Perm()&0o077 != 0 {
+		t.Errorf("staging dir mode = %v, want it private", fi.Mode().Perm())
 	}
 }

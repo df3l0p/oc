@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -188,5 +189,89 @@ func TestUsageDocumentsTheOpenRouterKey(t *testing.T) {
 		if !strings.Contains(buf.String(), want) {
 			t.Errorf("usage is missing %q:\n%s", want, buf.String())
 		}
+	}
+}
+
+func TestValidateRequiresSandboxForSkillFlags(t *testing.T) {
+	for _, cfg := range []cliConfig{{skills: stringList{"foo"}}, {skillsDirs: stringList{"/x"}}} {
+		err := cfg.validate()
+		if err == nil || !strings.Contains(err.Error(), "-skill") || !strings.Contains(err.Error(), "require -sandbox") {
+			t.Errorf("validate(%+v) = %v, want a requires -sandbox error naming -skill", cfg, err)
+		}
+	}
+	if err := (cliConfig{sandbox: true, skills: stringList{"foo"}, skillsDirs: stringList{"/x"}}).validate(); err != nil {
+		t.Errorf("with -sandbox: %v", err)
+	}
+}
+
+func TestSandboxUpdateDropsTheSkillFlags(t *testing.T) {
+	c := cliConfig{sandboxUpdate: true, skills: stringList{"foo"}, skillsDirs: stringList{"/x"}}
+	c.applyImplications()
+	c.dropSkillsForUpdate()
+	if len(c.skills) != 0 || len(c.skillsDirs) != 0 {
+		t.Errorf("skills = %v, dirs = %v; want both dropped", c.skills, c.skillsDirs)
+	}
+	if err := c.validate(); err != nil {
+		t.Errorf("validate = %v", err)
+	}
+	kept := cliConfig{sandbox: true, skills: stringList{"foo"}}
+	kept.dropSkillsForUpdate()
+	if len(kept.skills) != 1 {
+		t.Errorf("a session's -skill was dropped: %v", kept.skills)
+	}
+}
+
+func TestSkillFlagsAreRepeatable(t *testing.T) {
+	var l stringList
+	for _, v := range []string{"a", "all", "~/b"} {
+		if err := l.Set(v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if strings.Join(l, " ") != "a all ~/b" {
+		t.Errorf("l = %v", l)
+	}
+}
+
+func TestResolveSkillsAttachesNothingWithoutFlags(t *testing.T) {
+	var buf bytes.Buffer
+	// A home that doesn't exist would make any lookup fail: none must happen.
+	got, err := resolveSkills(cliConfig{sandbox: true}, "/nonexistent-home", "/nonexistent-cwd", &buf)
+	if err != nil || got != nil || buf.Len() != 0 {
+		t.Errorf("got %v, %v, output %q", got, err, buf.String())
+	}
+}
+
+func TestResolveSkillsPrintsWarningsAndResolves(t *testing.T) {
+	home, cwd := t.TempDir(), t.TempDir()
+	for _, d := range []string{
+		filepath.Join(home, ".config", "opencode", "skills", "foo"),
+		filepath.Join(home, ".claude", "skills", "foo"),
+	} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(d, "SKILL.md"), []byte("---\nname: foo\n---\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var buf bytes.Buffer
+	if _, err := resolveSkills(cliConfig{sandbox: true, skills: stringList{"foo"}}, home, cwd, &buf); err == nil {
+		t.Errorf("an ambiguous -skill must fail")
+	}
+	got, err := resolveSkills(cliConfig{sandbox: true, skills: stringList{"all"}}, home, cwd, &buf)
+	if err != nil || len(got) != 1 {
+		t.Fatalf("got %v, %v", got, err)
+	}
+	if !strings.Contains(buf.String(), "rnes: warning:") || !strings.Contains(buf.String(), "shadowing") {
+		t.Errorf("output = %q", buf.String())
+	}
+
+	buf.Reset()
+	if _, err := resolveSkills(cliConfig{sandbox: true, skillsDirs: stringList{filepath.Join(home, "absent")}}, home, cwd, &buf); err == nil {
+		t.Errorf("a missing -skills-dir must fail")
+	}
+	if _, err := resolveSkills(cliConfig{sandbox: true, skillsDirs: stringList{home}}, home, cwd, &buf); err != nil || !strings.Contains(buf.String(), "nothing is attached") {
+		t.Errorf("-skills-dir alone: %v, output %q", err, buf.String())
 	}
 }

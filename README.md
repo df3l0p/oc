@@ -60,6 +60,8 @@ This starts (or reuses) a llama-server serving the default model, merges a
 | `-sandbox-update` | off                                         | Rebuild the sandbox images (all, or just `-image`) from scratch, then exit without running the agent (implies `-sandbox` and `-build`) |
 | `-all-net`  | off                                               | Let the sandbox reach any public host, not just the default allow-list (requires `-sandbox`; see below) |
 | `-no-inspect` | off                                             | Don't decrypt the sandbox's HTTPS in the proxy; tunnel it unread (requires `-sandbox`; see below) |
+| `-skill`    | none                                              | Attach a host skill to the sandbox, read-only: a name, a path to a skill directory, or `all`. Repeatable (requires `-sandbox`; see *Skills* below) |
+| `-skills-dir` | none                                            | Add a host folder of skills to search, before the default ones, for `-skill` names and `all`; attaches nothing on its own. Repeatable (requires `-sandbox`) |
 
 Each harness owns its own config path internally (opencode's is its default
 global config, `~/.config/opencode/opencode.jsonc`) — there's no flag for it.
@@ -228,6 +230,73 @@ opencode).
   - Requires `-sandbox` (ignored with a note otherwise) and TLS interception:
     `rnes` refuses `-no-inspect` while the variable is set.
 - Session data inside the container is discarded on exit (`--rm`).
+
+#### Skills
+
+The sandbox has no access to your home directory, so none of your opencode
+skills (`<name>/SKILL.md` directories) are visible in it by default. `-skill`
+attaches the ones you choose; without it nothing is attached and no skills
+folder is even read.
+
+```sh
+rnes -sandbox -skill git-release                 # one skill, by name
+rnes -sandbox -skill git-release -skill review   # several
+rnes -sandbox -skill ~/work/skills/review        # a path to one skill directory
+rnes -sandbox -skill all                         # everything found
+rnes -sandbox -skills-dir ~/team-skills -skill deploy
+```
+
+- **Values:** a `-skill` value containing a `/` or starting with `~` is a path
+  to exactly that skill directory (relative paths are relative to the current
+  directory). `all` attaches every skill found. Anything else is a skill name
+  to look up, which must be a valid opencode skill name (lowercase letters and
+  digits separated by single hyphens, at most 64 characters); a skill
+  literally named `all` can only be attached by path.
+- **Sources:** names and `all` are looked up, in this order, in each
+  `-skills-dir` (in the order given), then `~/.config/opencode/skills`,
+  `~/.agents/skills` and `~/.claude/skills`. Each folder's immediate
+  subdirectories are its skills. Default folders that don't exist are skipped;
+  a `-skills-dir` that doesn't exist is an error. `-skills-dir` on its own
+  attaches nothing.
+- **Conflicts:**
+  - A name found in more than one folder is an error listing every candidate,
+    and the session doesn't start: pick one with its path. (The same directory
+    reached twice, e.g. through a symlink, counts once.)
+  - `all` never fails on duplicates: the first folder wins, and each shadowed
+    skill gets a warning naming both paths. A skill also given explicitly (by
+    name or path) wins over `all`'s pick.
+  - Asking for the same skill twice, or by name and through `all`, attaches it
+    once. Two *different* directories requested explicitly under one name is
+    an error.
+  - An unknown name is an error naming the folders searched.
+  - If the project already has a skill of the same name in `.opencode/skills`,
+    `.claude/skills` or `.agents/skills`, `rnes` warns; which one opencode uses
+    is up to opencode.
+- **Validation:** a skill is a directory with a `SKILL.md` (a regular file
+  inside it), whose folder name is a valid skill name. An explicitly requested
+  skill that isn't valid is an error; under `all`, invalid entries are skipped
+  with a warning (plain files and hidden entries such as `.git` are ignored).
+- **In the sandbox:** each attached skill's directory is bind-mounted
+  read-only at `~/.config/opencode/skills/<name>`, where opencode finds global
+  skills. They are live (edits on the host show up in the session), and
+  nothing else from your skills folders or home directory is visible. A
+  symlink inside a skill that points outside its directory is dangling in the
+  container. So that docker doesn't create `~/.config` root-owned (opencode
+  writes to `~/.config/opencode`), the container's `~/.config` is then a
+  private, per-session directory under `$TMPDIR` that rnes removes when the
+  session ends; anything an image puts in `~/.config` itself is hidden while
+  skills are attached (the bundled images put nothing there).
+- **Output:** `rnes` prints one line listing the attached skills and the folder
+  each came from; warnings go to stderr as `rnes: warning: …`. More than 50
+  skills (one mount each) prints a warning.
+- **Security:** a skill's content is untrusted input to the agent, like any
+  project file, and it reaches the model: every attached skill's name and
+  description are in the agent's prompt, and its files whenever the agent reads
+  them. With an OpenRouter model, that means they leave your machine. Attaching
+  skills adds no credentials or environment variables. Only attach skills you
+  trust and are happy to send to the model.
+- Like the other sandbox flags, `-skill` and `-skills-dir` require `-sandbox`,
+  and `-sandbox-update` ignores them with a note.
 
 ## Notes
 

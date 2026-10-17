@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/df3l0p/rnes/internal/skills"
 )
 
 // Harness configures a coding agent to use a local OpenAI-compatible model
@@ -73,6 +75,9 @@ type Options struct {
 	// OpenRouterKey, when set (with Sandbox), is injected by the sandbox's proxy
 	// into requests to openrouter.ai; the sandbox itself only gets a placeholder.
 	OpenRouterKey string
+	// Skills are host skills to mount read-only into the sandbox, where
+	// opencode looks for global skills (with Sandbox; see package skills).
+	Skills []skills.Skill
 }
 
 // registry maps a harness name, as accepted by rnes's --harness flag, to a

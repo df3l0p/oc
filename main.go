@@ -18,6 +18,7 @@ import (
 	"github.com/df3l0p/rnes/internal/harness"
 	"github.com/df3l0p/rnes/internal/llamaserver"
 	"github.com/df3l0p/rnes/internal/proxy"
+	"github.com/df3l0p/rnes/internal/skills"
 )
 
 const providerKey = "llama-cpp"
@@ -47,14 +48,28 @@ type cliConfig struct {
 	githubToken string
 	// openrouterKey is RNES_OPENROUTER_API_KEY, handled like githubToken.
 	openrouterKey string
+	// skills are the -skill values (names, paths or "all") and skillsDirs the
+	// -skills-dir folders, both in the order given.
+	skills     stringList
+	skillsDirs stringList
+}
+
+// stringList is a repeatable string flag.
+type stringList []string
+
+func (l *stringList) String() string { return strings.Join(*l, ",") }
+
+func (l *stringList) Set(v string) error {
+	*l = append(*l, v)
+	return nil
 }
 
 const defaultHost = "127.0.0.1"
 
 // validate rejects flag combinations that only make sense with -sandbox.
 func (c cliConfig) validate() error {
-	if !c.sandbox && (c.image != "" || c.build || c.allNet || c.noInspect) {
-		return fmt.Errorf("-image, -build, -all-net and -no-inspect require -sandbox")
+	if !c.sandbox && (c.image != "" || c.build || c.allNet || c.noInspect || len(c.skills) > 0 || len(c.skillsDirs) > 0) {
+		return fmt.Errorf("-image, -build, -all-net, -no-inspect, -skill and -skills-dir require -sandbox")
 	}
 	if c.githubToken != "" {
 		if err := proxy.ValidateToken(c.githubToken); err != nil {
@@ -140,6 +155,35 @@ func (c cliConfig) sessionCredential(env, val string) string {
 	return ""
 }
 
+// dropSkillsForUpdate clears the skill flags with -sandbox-update, which exits
+// before a session starts, with a note like sessionCredential's.
+func (c *cliConfig) dropSkillsForUpdate() {
+	if c.sandboxUpdate && (len(c.skills) > 0 || len(c.skillsDirs) > 0) {
+		fmt.Fprintln(os.Stderr, "rnes: note: -skill and -skills-dir are ignored with -sandbox-update (no session runs)")
+		c.skills, c.skillsDirs = nil, nil
+	}
+}
+
+// resolveSkills resolves -skill and -skills-dir against the host, printing any
+// warnings to stderr. Without either flag it attaches nothing and reads
+// nothing.
+func resolveSkills(c cliConfig, home, cwd string, stderr io.Writer) ([]skills.Skill, error) {
+	if len(c.skills) == 0 && len(c.skillsDirs) == 0 {
+		return nil, nil
+	}
+	attached, warnings, err := skills.Resolve(skills.Request{Values: c.skills, Dirs: c.skillsDirs, Home: home, Cwd: cwd})
+	if err != nil {
+		return nil, err
+	}
+	for _, w := range warnings {
+		fmt.Fprintln(stderr, "rnes: warning:", w)
+	}
+	if len(c.skills) == 0 {
+		fmt.Fprintln(stderr, "rnes: note: -skills-dir only adds folders to look -skill names up in; without -skill nothing is attached")
+	}
+	return attached, nil
+}
+
 // githubTokenFromEnv returns RNES_GITHUB_TOKEN and removes it from rnes's
 // environment, so nothing rnes starts afterwards (docker, llama-server) inherits it.
 func githubTokenFromEnv() string {
@@ -199,6 +243,8 @@ func parseFlags() (cliConfig, error) {
 	flag.BoolVar(&cfg.sandboxUpdate, "sandbox-update", false, "rebuild the sandbox images (every bundled one, or just -image if given; plus the base and the proxy image) from scratch, without docker's layer cache, so it picks up new apt packages and a newer opencode-ai, then exit without running the agent; implies -sandbox")
 	flag.BoolVar(&cfg.allNet, "all-net", false, "let the sandbox reach any public host over http(s), not just the default allow-list (your machine and LAN stay blocked apart from llama-server); requires -sandbox")
 	flag.BoolVar(&cfg.noInspect, "no-inspect", false, "don't terminate TLS in the sandbox's proxy: tunnel every HTTPS connection unread (by default the proxy decrypts the allow-listed hosts with a CA made for the session, and logs each request); requires -sandbox")
+	flag.Var(&cfg.skills, "skill", "attach a host opencode skill to the sandbox, read-only: a skill name (looked up in each -skills-dir, then ~/.config/opencode/skills, ~/.agents/skills and ~/.claude/skills), a path to one skill directory, or \"all\"; repeatable; requires -sandbox")
+	flag.Var(&cfg.skillsDirs, "skills-dir", "a host folder whose subdirectories are skills, searched before the default ones for -skill names and \"all\"; attaches nothing on its own; repeatable; requires -sandbox")
 	flag.Usage = func() { usage(os.Stderr) }
 	flag.Parse()
 	flag.Visit(func(f *flag.Flag) {
@@ -207,6 +253,7 @@ func parseFlags() (cliConfig, error) {
 		}
 	})
 	cfg.applyImplications()
+	cfg.dropSkillsForUpdate()
 	cfg.githubToken = cfg.sessionCredential("RNES_GITHUB_TOKEN", githubTokenFromEnv())
 	cfg.openrouterKey = cfg.sessionCredential("RNES_OPENROUTER_API_KEY", openRouterKeyFromEnv())
 	return cfg, cfg.validate()
@@ -225,7 +272,22 @@ func run() error {
 		return err
 	}
 
-	h, err := harness.New(cfg.harness, harness.Options{Sandbox: cfg.sandbox, Image: cfg.image, Build: cfg.build, AllNet: cfg.allNet, NoInspect: cfg.noInspect, GitHubToken: cfg.githubToken, OpenRouterKey: cfg.openrouterKey})
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("resolving home directory: %w", err)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("resolving current directory: %w", err)
+	}
+	// Before anything starts, so a bad -skill (an ambiguous name, say) fails
+	// with no server or container left behind.
+	attached, err := resolveSkills(cfg, home, cwd, os.Stderr)
+	if err != nil {
+		return err
+	}
+
+	h, err := harness.New(cfg.harness, harness.Options{Sandbox: cfg.sandbox, Image: cfg.image, Build: cfg.build, AllNet: cfg.allNet, NoInspect: cfg.noInspect, GitHubToken: cfg.githubToken, OpenRouterKey: cfg.openrouterKey, Skills: attached})
 	if err != nil {
 		return err
 	}
@@ -240,6 +302,9 @@ func run() error {
 	}
 	if names := activeProviders(cfg); len(names) > 0 {
 		fmt.Fprintln(os.Stderr, "rnes: credential providers:", strings.Join(names, ", "))
+	}
+	if len(attached) > 0 {
+		fmt.Fprintln(os.Stderr, "rnes: skills (read-only in the sandbox):", skills.Summary(attached))
 	}
 	if err := h.Available(); err != nil {
 		return err
@@ -351,11 +416,6 @@ func run() error {
 
 	if err := h.Configure(providerKey, baseURL, modelIDs); err != nil {
 		return fmt.Errorf("updating opencode config: %w", err)
-	}
-
-	cwd, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("resolving current directory: %w", err)
 	}
 
 	// opencode shares rnes's foreground process group, so Ctrl+C delivers

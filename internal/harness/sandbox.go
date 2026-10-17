@@ -4,18 +4,21 @@ import (
 	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/csv"
 	"encoding/hex"
 	"fmt"
 	"net"
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 
 	"github.com/df3l0p/rnes/images"
 	"github.com/df3l0p/rnes/internal/opencodeconfig"
 	"github.com/df3l0p/rnes/internal/proxy"
+	"github.com/df3l0p/rnes/internal/skills"
 )
 
 const (
@@ -37,6 +40,12 @@ const (
 	// containerCAPath is the trust bundle in it (the system roots plus the
 	// session CA), named by rnes-proxy's -ca-out default.
 	containerCAPath = containerCADir + "/ca.pem"
+	// containerConfigHome is the agent's ~/.config. With skills attached it is
+	// a host staging directory (see stageConfigHome); otherwise the image's.
+	containerConfigHome = containerHome + "/.config"
+	// containerSkillsDir is where opencode looks for global skills; each
+	// attached skill is mounted read-only at <containerSkillsDir>/<name>.
+	containerSkillsDir = containerConfigHome + "/opencode/skills"
 )
 
 // caTrustEnv is the environment that makes the agent's tools trust
@@ -87,6 +96,11 @@ type Sandbox struct {
 	// openrouterKey and openrouterPlaceholder are the same for OpenRouter.
 	openrouterKey         string
 	openrouterPlaceholder string
+	// skills are mounted read-only under containerSkillsDir.
+	skills []skills.Skill
+	// configHome is the host staging directory mounted as the agent's
+	// ~/.config when skills are attached, set by Run.
+	configHome string
 }
 
 // hostOS is runtime.GOOS, replaceable in tests.
@@ -113,7 +127,7 @@ func newSandbox(opts Options, hostConfig string) *Sandbox {
 	if name == "" {
 		name = images.Default
 	}
-	return &Sandbox{name: name, build: opts.Build, allNet: opts.AllNet, inspect: !opts.NoInspect, githubToken: opts.GitHubToken, openrouterKey: opts.OpenRouterKey, hostConfig: hostConfig, hostIP: "host-gateway"}
+	return &Sandbox{name: name, build: opts.Build, allNet: opts.AllNet, inspect: !opts.NoInspect, githubToken: opts.GitHubToken, openrouterKey: opts.OpenRouterKey, skills: opts.Skills, hostConfig: hostConfig, hostIP: "host-gateway"}
 }
 
 // BindHost returns the address llama-server should listen on so the container
@@ -311,6 +325,19 @@ func (s *Sandbox) Run(dir, providerKey, modelID string) error {
 		return fmt.Errorf("sandbox: Prepare must be called before Run")
 	}
 
+	if len(s.skills) > 0 {
+		home, err := stageConfigHome(s.skills)
+		if err != nil {
+			return err
+		}
+		s.configHome = home
+		defer func() {
+			if err := os.RemoveAll(home); err != nil {
+				fmt.Fprintf(os.Stderr, "rnes: warning: couldn't remove the sandbox's ~/.config staging directory %s: %v\n", home, err)
+			}
+		}()
+	}
+
 	if s.githubToken != "" {
 		placeholder, err := newPlaceholder()
 		if err != nil {
@@ -422,6 +449,7 @@ func (s *Sandbox) runArgs(name, dir, providerKey, modelID string, pn *proxyNet, 
 		// opencode's built-in openrouter provider reads its key from here.
 		args = append(args, "-e", "OPENROUTER_API_KEY="+s.openrouterPlaceholder)
 	}
+	args = append(args, s.skillMounts()...)
 	return append(args,
 		"-w", containerWorkdir,
 		s.image,
@@ -437,6 +465,61 @@ func newPlaceholder() (string, error) {
 		return "", fmt.Errorf("generating a credential placeholder: %w", err)
 	}
 	return "rnes_placeholder_" + hex.EncodeToString(b[:]), nil
+}
+
+// skillMounts are the docker arguments that attach s.skills: each skill's
+// directory bind-mounted read-only at containerSkillsDir/<name>, so it stays
+// live and nothing else on the host is visible. A symlink inside a skill
+// resolves in the container, so one pointing outside its directory dangles.
+//
+// Docker would create the mount points' missing parents (~/.config,
+// ~/.config/opencode) root-owned, leaving opencode unable to write its config
+// directory. So ~/.config itself is a host staging directory owned by the
+// session's user, with the mount points already in it (see stageConfigHome).
+func (s *Sandbox) skillMounts() []string {
+	if len(s.skills) == 0 {
+		return nil
+	}
+	args := []string{"--mount", bindMount(s.configHome, containerConfigHome, false)}
+	for _, sk := range s.skills {
+		args = append(args, "--mount", bindMount(sk.Dir, containerSkillsDir+"/"+sk.Name, true))
+	}
+	return args
+}
+
+// bindMount is a --mount value. Its fields are CSV, as docker parses them, so a
+// path with a comma or a quote still means what it says (unlike -v, which
+// splits on colons).
+func bindMount(src, dst string, readonly bool) string {
+	fields := []string{"type=bind", "source=" + src, "target=" + dst}
+	if readonly {
+		fields = append(fields, "readonly")
+	}
+	var b strings.Builder
+	w := csv.NewWriter(&b)
+	_ = w.Write(fields) // a strings.Builder can't fail
+	w.Flush()
+	return strings.TrimSuffix(b.String(), "\n")
+}
+
+// stageConfigHome creates the host directory mounted as the agent's ~/.config
+// when skills are attached: private to the user, with an empty
+// opencode/skills/<name> mount point per skill. Creating the mount points here
+// means docker doesn't create them, as root, in a directory rnes must remove
+// afterwards. The agent's writes to ~/.config land here and are removed with
+// it when the session ends, as they would be with the container.
+func stageConfigHome(attached []skills.Skill) (string, error) {
+	dir, err := os.MkdirTemp("", "rnes-sandbox-home-config-*")
+	if err != nil {
+		return "", fmt.Errorf("creating the sandbox's ~/.config: %w", err)
+	}
+	for _, sk := range attached {
+		if err := os.MkdirAll(filepath.Join(dir, "opencode", "skills", sk.Name), 0o755); err != nil {
+			os.RemoveAll(dir)
+			return "", fmt.Errorf("creating the sandbox's ~/.config: %w", err)
+		}
+	}
+	return dir, nil
 }
 
 // providerConfig is the line of provider config for rnes-proxy's stdin, or nil
