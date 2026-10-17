@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/df3l0p/rnes/internal/opencodeconfig"
@@ -57,21 +58,18 @@ func (o Opencode) Available() error {
 	return opencodeIsV2(string(out))
 }
 
+// versionRE finds the first "major.minor" version in --version output,
+// with an optional "v", so "opencode v2.0.32", "2.0.32" and a version
+// followed by a build date or hash all parse the same.
+var versionRE = regexp.MustCompile(`(?:^|\s)v?(\d+)\.\d+`)
+
 // opencodeIsV2 reports an error unless out (the output of opencode
-// --version) says version 2. It tolerates the spellings "opencode
-// v2.0.32", "v2.0.32" and "2.0.32"; anything else, including a v1 binary,
-// is rejected.
+// --version) says major version 2.
 func opencodeIsV2(out string) error {
-	var ver string
-	for _, f := range strings.Fields(out) {
-		if strings.HasPrefix(f, "v") || (f != "" && f[0] >= '0' && f[0] <= '9') {
-			ver = strings.TrimPrefix(f, "v")
-		}
+	if m := versionRE.FindStringSubmatch(out); m != nil && m[1] == "2" {
+		return nil
 	}
-	if !strings.HasPrefix(ver, "2.") {
-		return fmt.Errorf("rnes requires opencode v2, got %q", strings.TrimSpace(out))
-	}
-	return nil
+	return fmt.Errorf("rnes requires opencode v2, got %q", strings.TrimSpace(out))
 }
 
 func (o Opencode) Configure(providerKey, baseURL string, modelIDs []string) error {
@@ -79,12 +77,12 @@ func (o Opencode) Configure(providerKey, baseURL string, modelIDs []string) erro
 }
 
 func (o Opencode) Run(dir, providerKey, modelID string) error {
-	// v2's full TUI has no model flag (v1's -m is gone), and rewriting the
-	// user's configured default model here would outlive the session. So on
-	// the host the session starts on whatever model opencode would pick
-	// anyway, and the llama-server models are one /models selection away;
-	// providerKey and modelID are what the sandbox config writer uses (see
-	// Sandbox.Run). The "." starts opencode in the working directory.
+	// The full TUI takes no model flag, and rewriting the user's configured
+	// default model would outlive the session. So on the host the session
+	// starts on whatever model opencode would pick anyway, and the
+	// llama-server models are one /models selection away. providerKey and
+	// modelID are only used by the sandbox, which writes them into its
+	// session-local config.
 	cmd := exec.Command("opencode", ".")
 	cmd.Dir = dir
 	// opencode only reads configPath by default when it's left at opencode's

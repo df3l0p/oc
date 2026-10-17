@@ -148,6 +148,41 @@ func TestSandboxConfigureGeneratesRewrittenCopyAndLeavesHostConfigAlone(t *testi
 	}
 }
 
+func TestSandboxApplyModelSetsTheSessionModelInTheGeneratedConfig(t *testing.T) {
+	hostConfig := filepath.Join(t.TempDir(), "opencode.jsonc")
+	const original = `{"theme": "dark", "model": "anthropic/other"}`
+	if err := os.WriteFile(hostConfig, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := newSandbox(Options{Sandbox: true}, hostConfig)
+	if err := s.Configure("llama-cpp", "http://127.0.0.1:8080", []string{"m1"}); err != nil {
+		t.Fatalf("Configure: %v", err)
+	}
+	t.Cleanup(func() { os.Remove(s.generated) })
+
+	if err := s.applyModel("llama-cpp", "m1"); err != nil {
+		t.Fatalf("applyModel: %v", err)
+	}
+
+	raw, _ := os.ReadFile(s.generated)
+	var got map[string]interface{}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("generated config is not valid JSON: %v\n%s", err, raw)
+	}
+	if got["model"] != "llama-cpp/m1" {
+		t.Errorf("model = %v, want llama-cpp/m1 (the host's default must not win)", got["model"])
+	}
+	if got["theme"] != "dark" {
+		t.Errorf("theme not preserved: %v", got["theme"])
+	}
+	if info, err := os.Stat(s.generated); err != nil || info.Mode().Perm() != 0o600 {
+		t.Errorf("generated config mode = %v (err %v), want 0600", info.Mode().Perm(), err)
+	}
+	if raw, _ := os.ReadFile(hostConfig); string(raw) != original {
+		t.Errorf("host config was modified: %s", raw)
+	}
+}
+
 func TestSandboxConfigureWithMissingHostConfig(t *testing.T) {
 	s := newSandbox(Options{Sandbox: true}, filepath.Join(t.TempDir(), "absent.jsonc"))
 	if err := s.Configure("llama-cpp", "http://127.0.0.1:8080", []string{"m1"}); err != nil {

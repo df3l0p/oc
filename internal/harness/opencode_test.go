@@ -58,13 +58,19 @@ func TestNewOpencodeUsesHomeConfigDir(t *testing.T) {
 
 func TestOpencodeIsV2(t *testing.T) {
 	for in, want := range map[string]bool{
-		"opencode v2.0.32\n": true,
-		"2.0.32":             true,
-		"opencode 2.0.0":     true,
-		"opencode v1.19.3":   false,
-		"1.18.31":            false,
-		"":                   false,
-		"not a version":      false,
+		"opencode v2.0.32\n":            true,
+		"2.0.32":                        true,
+		"opencode 2.0.0":                true,
+		"opencode v2.0.32 2026-10-17\n": true,
+		"v2.0.32 (build 2026)":          true,
+		"opencode version 2.0.32":       true,
+		"opencode v2.0.32-beta.1":       true,
+		"opencode v1.19.3":              false,
+		"1.18.31":                       false,
+		"opencode v12.0.0":              false,
+		"opencode v1.19.3 2026-10-17":   false,
+		"":                              false,
+		"not a version":                 false,
 	} {
 		if err := opencodeIsV2(in); (err == nil) != want {
 			t.Errorf("opencodeIsV2(%q) error = %v, want v2 accepted = %v", in, err, want)

@@ -204,27 +204,10 @@ func DropProviderOption(raw []byte, providerKey, option string) ([]byte, bool, e
 	if err := json.Unmarshal(raw, &config); err != nil {
 		return nil, false, fmt.Errorf("parsing: %w", err)
 	}
-	dropped := false
-	providers, _ := config["providers"].(map[string]interface{})
-	if block, _ := providers[providerKey].(map[string]interface{}); block != nil {
-		if settings, _ := block["settings"].(map[string]interface{}); settings != nil {
-			if _, ok := settings[option]; ok {
-				delete(settings, option)
-				dropped = true
-			}
-		}
-	}
-	if legacy, _ := config["provider"].(map[string]interface{}); legacy != nil {
-		if block, _ := legacy[providerKey].(map[string]interface{}); block != nil {
-			if options, _ := block["options"].(map[string]interface{}); options != nil {
-				if _, ok := options[option]; ok {
-					delete(options, option)
-					dropped = true
-				}
-			}
-		}
-	}
-	if !dropped {
+	// Both locations are always tried: a config can carry the option in each.
+	fromSettings := dropNested(config, "providers", providerKey, "settings", option)
+	fromOptions := dropNested(config, "provider", providerKey, "options", option)
+	if !fromSettings && !fromOptions {
 		return raw, false, nil
 	}
 	out, err := json.MarshalIndent(config, "", "  ")
@@ -234,8 +217,21 @@ func DropProviderOption(raw []byte, providerKey, option string) ([]byte, bool, e
 	return append(out, '\n'), true, nil
 }
 
+// dropNested deletes config[top][providerKey][group][option], reporting
+// whether it was there. A missing level at any depth counts as absent.
+func dropNested(config map[string]interface{}, top, providerKey, group, option string) bool {
+	providers, _ := config[top].(map[string]interface{})
+	block, _ := providers[providerKey].(map[string]interface{})
+	values, _ := block[group].(map[string]interface{})
+	if _, ok := values[option]; !ok {
+		return false
+	}
+	delete(values, option)
+	return true
+}
+
 // SetModel sets the top-level "model" default in the JSON config in raw, in
-// opencode's "provider/model" format. v2's full TUI has no model flag, so
+// opencode's "provider/model" format. The full TUI takes no model flag, so
 // this is how a session starts on a chosen model without touching any
 // config that outlives it.
 func SetModel(raw []byte, model string) ([]byte, error) {

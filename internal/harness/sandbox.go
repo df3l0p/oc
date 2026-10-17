@@ -321,25 +321,11 @@ func (s *Sandbox) Run(dir, providerKey, modelID string) error {
 		return fmt.Errorf("sandbox: Configure must be called before Run")
 	}
 	defer os.Remove(s.generated)
-
-	// The harness's session UI may not accept a model flag, so the
-	// session's model rides in the generated config's top-level "model"
-	// default. The config is session-local and mounted read-only into the
-	// container, so nothing outlives the session.
-	raw, err := os.ReadFile(s.generated)
-	if err != nil {
-		return fmt.Errorf("reading generated config: %w", err)
-	}
-	raw, err = opencodeconfig.SetModel(raw, providerKey+"/"+modelID)
-	if err != nil {
-		return fmt.Errorf("setting the sandbox's model: %w", err)
-	}
-	if err := os.WriteFile(s.generated, raw, 0o600); err != nil {
-		return fmt.Errorf("writing generated config: %w", err)
-	}
-
 	if s.image == "" || s.proxyImage == "" {
 		return fmt.Errorf("sandbox: Prepare must be called before Run")
+	}
+	if err := s.applyModel(providerKey, modelID); err != nil {
+		return err
 	}
 
 	if len(s.skills) > 0 {
@@ -400,6 +386,25 @@ func (s *Sandbox) Run(dir, providerKey, modelID string) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+// applyModel makes the session start on providerKey/modelID. The harness's
+// session UI may not accept a model flag, so the model rides in the
+// generated config's top-level "model" default. The config is session-local
+// and mounted read-only into the container, so nothing outlives the session.
+func (s *Sandbox) applyModel(providerKey, modelID string) error {
+	raw, err := os.ReadFile(s.generated)
+	if err != nil {
+		return fmt.Errorf("reading generated config: %w", err)
+	}
+	raw, err = opencodeconfig.SetModel(raw, providerKey+"/"+modelID)
+	if err != nil {
+		return fmt.Errorf("setting the sandbox's model: %w", err)
+	}
+	if err := os.WriteFile(s.generated, raw, 0o600); err != nil {
+		return fmt.Errorf("writing generated config: %w", err)
+	}
+	return nil
 }
 
 // policy is this session's proxy allow-list: the shipped defaults plus
