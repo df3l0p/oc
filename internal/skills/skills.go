@@ -124,6 +124,9 @@ func Resolve(req Request) ([]Skill, []string, error) {
 	}
 	if all {
 		r.all()
+		if len(r.chosen) == 0 {
+			r.warnings = append(r.warnings, fmt.Sprintf("-skill %s: no skills found in any folder searched, so nothing is attached", All))
+		}
 	}
 
 	out := make([]Skill, 0, len(r.chosen))
@@ -141,10 +144,29 @@ func Resolve(req Request) ([]Skill, []string, error) {
 			}
 		}
 	}
+	// The working directory is mounted read-write in the sandbox, so a skill
+	// inside it can be changed by the agent through that mount, whatever the
+	// skill's own mount says. Dir has symlinks resolved, so compare against
+	// the resolved working directory.
+	cwd := req.Cwd
+	if real, err := filepath.EvalSymlinks(cwd); err == nil {
+		cwd = real
+	}
+	for _, s := range out {
+		if within(cwd, s.Dir) {
+			warnings = append(warnings, fmt.Sprintf("skill %q (%s) is inside the project, which is writable in the sandbox: the agent can modify it despite its read-only mount", s.Name, s.Dir))
+		}
+	}
 	if len(out) > ManyMounts {
 		warnings = append(warnings, fmt.Sprintf("%d skills attached: the container gets one read-only mount per skill, which is a lot of mounts", len(out)))
 	}
 	return out, warnings, nil
+}
+
+// within reports whether path is dir itself or inside it.
+func within(dir, path string) bool {
+	rel, err := filepath.Rel(dir, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // Summary is the startup line's text: each attached skill and the folder it

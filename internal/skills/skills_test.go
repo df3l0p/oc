@@ -370,6 +370,57 @@ func TestProjectCollisionWarns(t *testing.T) {
 	}
 }
 
+func TestSkillInsideTheProjectWarnsItIsWritable(t *testing.T) {
+	e := newEnv(t)
+	inProject := e.skill(filepath.Join(e.cwd, "team-skills"), "foo")
+	outside := e.skill(e.opencode(), "bar")
+
+	// By path, alongside one outside the project.
+	got, warns, err := e.resolve([]string{inProject, "bar"})
+	if err != nil || len(got) != 2 {
+		t.Fatalf("got %v, %v", got, err)
+	}
+	if len(warns) != 1 || !strings.Contains(warns[0], `"foo"`) || !strings.Contains(warns[0], "writable") {
+		t.Errorf("want one writable warning for foo only, got %q", warns)
+	}
+	// By name, through a -skills-dir inside the project.
+	_, warns, err = e.resolve([]string{"foo"}, filepath.Join(e.cwd, "team-skills"))
+	if err != nil || len(warns) != 1 || !strings.Contains(warns[0], "writable") {
+		t.Errorf("-skills-dir inside the project: %v, %q", err, warns)
+	}
+
+	// A skill outside the project, or in a sibling whose name merely starts
+	// with the project's, doesn't warn.
+	sibling := e.skill(e.cwd+"-other", "baz")
+	_, warns, err = e.resolve([]string{outside, sibling})
+	if err != nil || len(warns) != 0 {
+		t.Errorf("outside the project: %v, %q", err, warns)
+	}
+}
+
+func TestAllWithNothingFoundWarns(t *testing.T) {
+	e := newEnv(t)
+	for name, dirs := range map[string][]string{
+		"no folders":   nil,
+		"empty folder": {t.TempDir()},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, warns, err := e.resolve([]string{"all"}, dirs...)
+			if err != nil || len(got) != 0 {
+				t.Fatalf("got %v, %v", got, err)
+			}
+			if len(warns) != 1 || !strings.Contains(warns[0], "nothing is attached") {
+				t.Errorf("warnings = %q", warns)
+			}
+		})
+	}
+	// Something found: no such warning.
+	e.skill(e.opencode(), "foo")
+	if _, warns, _ := e.resolve([]string{"all"}); len(warns) != 0 {
+		t.Errorf("warnings = %q", warns)
+	}
+}
+
 func TestManySkillsWarn(t *testing.T) {
 	e := newEnv(t)
 	for i := 0; i <= ManyMounts; i++ {

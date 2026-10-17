@@ -288,7 +288,10 @@ rnes -sandbox -skills-dir ~/team-skills -skill deploy
   skills are attached (the bundled images put nothing there).
 - **Output:** `rnes` prints one line listing the attached skills and the folder
   each came from; warnings go to stderr as `rnes: warning: …`. More than 50
-  skills (one mount each) prints a warning.
+  skills (one mount each) prints a warning, as does `-skill all` finding
+  nothing, and a skill that lives inside the project: the project is writable
+  in the sandbox, so the agent can change that skill despite its read-only
+  mount.
 - **Security:** a skill's content is untrusted input to the agent, like any
   project file, and it reaches the model: every attached skill's name and
   description are in the agent's prompt, and its files whenever the agent reads
