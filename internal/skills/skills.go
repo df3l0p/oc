@@ -364,6 +364,27 @@ func (r *resolver) all() {
 	}
 }
 
+// DiscoverAll lists every skill in the default sources, the first source
+// winning a name: the skills a host session (no sandbox, no -skill flags)
+// has available for command generation. Invalid entries are skipped with a
+// warning, like -skill all.
+func DiscoverAll(home string) ([]Skill, []string) {
+	var srcs []string
+	for _, d := range DefaultSources(home) {
+		if fi, err := os.Stat(d); err == nil && fi.IsDir() {
+			srcs = append(srcs, d)
+		}
+	}
+	r := resolver{sources: srcs, chosen: map[string]Skill{}}
+	r.all()
+	out := make([]Skill, 0, len(r.chosen))
+	for _, s := range r.chosen {
+		out = append(out, s)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, r.warnings
+}
+
 const invalidNameReason = "not a valid skill name (lowercase letters and digits separated by single hyphens, at most 64 characters)"
 
 // check validates the skill directory p, to be attached as name, and returns

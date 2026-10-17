@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/df3l0p/rnes/internal/opencodeconfig"
+	"github.com/df3l0p/rnes/internal/skills"
 )
 
 // Opencode drives opencode (github.com/anomalyco/opencode) as a Harness. Its
@@ -17,6 +18,9 @@ import (
 // on its own.
 type Opencode struct {
 	configPath string
+	// skillCommands generates a /<name> command for every skill in the
+	// default skill folders (see package skills), unless disabled.
+	skillCommands bool
 }
 
 func newOpencode(opts Options) (Harness, error) {
@@ -28,7 +32,7 @@ func newOpencode(opts Options) (Harness, error) {
 	if opts.Sandbox {
 		return newSandbox(opts, configPath), nil
 	}
-	return Opencode{configPath: configPath}, nil
+	return Opencode{configPath: configPath, skillCommands: !opts.NoSkillCommands}, nil
 }
 
 // opencodeProvider builds the provider block that points opencode at a
@@ -83,15 +87,51 @@ func (o Opencode) Run(dir, providerKey, modelID string) error {
 	// llama-server models are one /models selection away. providerKey and
 	// modelID are only used by the sandbox, which writes them into its
 	// session-local config.
-	cmd := exec.Command("opencode", ".")
+	args, env := o.launch(dir)
+	cmd := exec.Command("opencode", args...)
 	cmd.Dir = dir
-	// opencode only reads configPath by default when it's left at opencode's
-	// own default global config path, which is exactly what configPath is
-	// here. OPENCODE_CONFIG is set anyway so this keeps working even if a
-	// future rnes option makes configPath configurable again.
-	cmd.Env = append(os.Environ(), "OPENCODE_CONFIG="+o.configPath)
+	cmd.Env = env
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+// launch is the opencode argv and environment for a host session. The
+// session-local OPENCODE_CONFIG always: opencode only reads configPath by
+// default when it's left at opencode's own default global config path, which
+// is exactly what configPath is here, so this keeps working even if a future
+// rnes option makes configPath configurable again. Plus — unless disabled —
+// the generated skill commands: they ride in OPENCODE_CONFIG_CONTENT (see
+// package skills), which only a server started with it in sight reads, so a
+// session with commands runs opencode with --standalone (its own server)
+// instead of the shared background one, which would silently ignore the
+// variable. With no commands to generate, the launch is unchanged.
+func (o Opencode) launch(dir string) ([]string, []string) {
+	env := append(os.Environ(), "OPENCODE_CONFIG="+o.configPath)
+	if !o.skillCommands {
+		return []string{"."}, env
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "rnes: warning: no skill commands: resolving home directory: %v\n", err)
+		return []string{"."}, env
+	}
+	found, warns := skills.DiscoverAll(home)
+	for _, w := range warns {
+		fmt.Fprintf(os.Stderr, "rnes: warning: %s\n", w)
+	}
+	names := make([]string, 0, len(found))
+	for _, s := range found {
+		names = append(names, s.Name)
+	}
+	names, warns = skills.CommandNames(dir, names)
+	for _, w := range warns {
+		fmt.Fprintf(os.Stderr, "rnes: warning: %s\n", w)
+	}
+	if len(names) == 0 {
+		return []string{"."}, env
+	}
+	fmt.Fprintf(os.Stderr, "rnes: skill commands: /%s\n", strings.Join(names, ", /"))
+	return []string{"--standalone", "."}, append(env, "OPENCODE_CONFIG_CONTENT="+skills.ConfigContent(names))
 }

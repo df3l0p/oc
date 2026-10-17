@@ -731,3 +731,40 @@ func TestStageConfigHomeHasTheMountPointsAndIsTheUsers(t *testing.T) {
 		t.Errorf("staging dir mode = %v, want it private", fi.Mode().Perm())
 	}
 }
+
+func TestAddSkillCommandsWritesFilesAndSkipsProjectCollisions(t *testing.T) {
+	s := newSandbox(Options{Sandbox: true, Skills: []skills.Skill{
+		{Name: "alpha", Dir: "/host/alpha"},
+		{Name: "beta", Dir: "/host/beta"},
+	}}, "")
+	cwd := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cwd, ".opencode", "commands"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cwd, ".opencode", "commands", "beta.md"), []byte("project"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	s.addSkillCommands(home, cwd)
+	raw, err := os.ReadFile(filepath.Join(home, "opencode", "commands", "alpha.md"))
+	if err != nil {
+		t.Fatalf("reading alpha command: %v", err)
+	}
+	if string(raw) != skills.CommandMarkdown("alpha") {
+		t.Errorf("alpha command = %q, want %q", raw, skills.CommandMarkdown("alpha"))
+	}
+	if _, err := os.Stat(filepath.Join(home, "opencode", "commands", "beta.md")); err == nil {
+		t.Errorf("a beta command was written although the project defines one")
+	}
+}
+
+func TestAddSkillCommandsDisabled(t *testing.T) {
+	s := newSandbox(Options{Sandbox: true, NoSkillCommands: true, Skills: []skills.Skill{
+		{Name: "alpha", Dir: "/host/alpha"},
+	}}, "")
+	home := t.TempDir()
+	s.addSkillCommands(home, t.TempDir())
+	if _, err := os.Stat(filepath.Join(home, "opencode", "commands")); err == nil {
+		t.Errorf("a commands directory was written although -no-skill-commands was given")
+	}
+}
