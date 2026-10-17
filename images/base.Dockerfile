@@ -8,7 +8,7 @@ FROM node:22-slim
 RUN apt-get update \
  && apt-get install -y --no-install-recommends git ca-certificates \
  && rm -rf /var/lib/apt/lists/* \
- && npm install -g opencode-ai \
+ && npm install -g @opencode/cli \
  && npm cache clean --force
 
 RUN useradd --create-home --home-dir /home/rnes --shell /bin/bash rnes \

@@ -109,7 +109,7 @@ func TestBundledImagesFollowTheContract(t *testing.T) {
 				if strings.Contains(src, "RNES_BASE") {
 					t.Error("the base must not depend on RNES_BASE")
 				}
-				if !strings.Contains(src, "npm install -g opencode-ai") {
+				if !strings.Contains(src, "npm install -g @opencode/cli") {
 					t.Error("the base must install opencode")
 				}
 				if !strings.Contains(src, `ENTRYPOINT ["opencode"]`) {

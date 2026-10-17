@@ -22,10 +22,10 @@ func TestMergePreservesExistingKeysAndComments(t *testing.T) {
 	}
 
 	provider := Provider{
-		NPM:     "@ai-sdk/openai-compatible",
-		Name:    "llama-server (local)",
-		Options: map[string]interface{}{"baseURL": "http://127.0.0.1:8080/v1"},
-		Models:  map[string]interface{}{"my-model": map[string]interface{}{"name": "my-model (local)"}},
+		Package:  "aisdk:@ai-sdk/openai-compatible",
+		Name:     "llama-server (local)",
+		Settings: map[string]interface{}{"baseURL": "http://127.0.0.1:8080/v1"},
+		Models:   map[string]interface{}{"my-model": map[string]interface{}{"name": "my-model (local)"}},
 	}
 
 	if err := Merge(path, "llama-cpp", provider); err != nil {
@@ -46,16 +46,19 @@ func TestMergePreservesExistingKeysAndComments(t *testing.T) {
 		t.Errorf("expected $schema preserved, got %v", got["$schema"])
 	}
 
-	providers, ok := got["provider"].(map[string]interface{})
+	providers, ok := got["providers"].(map[string]interface{})
 	if !ok {
-		t.Fatalf("expected provider map, got %T", got["provider"])
+		t.Fatalf("expected providers map, got %T", got["providers"])
 	}
 	block, ok := providers["llama-cpp"].(map[string]interface{})
 	if !ok {
 		t.Fatalf("expected llama-cpp provider block, got %T", providers["llama-cpp"])
 	}
-	if block["npm"] != "@ai-sdk/openai-compatible" {
-		t.Errorf("expected npm field set, got %v", block["npm"])
+	if block["package"] != "aisdk:@ai-sdk/openai-compatible" {
+		t.Errorf("expected package field set, got %v", block["package"])
+	}
+	if block["settings"].(map[string]interface{})["baseURL"] != "http://127.0.0.1:8080/v1" {
+		t.Errorf("expected settings.baseURL set, got %v", block["settings"])
 	}
 }
 
@@ -63,7 +66,7 @@ func TestMergeCreatesMissingFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "nested", "opencode.jsonc")
 
-	provider := Provider{NPM: "@ai-sdk/openai-compatible"}
+	provider := Provider{Package: "aisdk:@ai-sdk/openai-compatible"}
 	if err := Merge(path, "llama-cpp", provider); err != nil {
 		t.Fatalf("Merge failed: %v", err)
 	}
@@ -81,7 +84,7 @@ func TestMergeIsIdempotentAndKeepsOtherProviders(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	provider := Provider{NPM: "@ai-sdk/openai-compatible"}
+	provider := Provider{Package: "aisdk:@ai-sdk/openai-compatible"}
 	if err := Merge(path, "llama-cpp", provider); err != nil {
 		t.Fatalf("first merge failed: %v", err)
 	}
@@ -97,12 +100,48 @@ func TestMergeIsIdempotentAndKeepsOtherProviders(t *testing.T) {
 	if err := json.Unmarshal(out, &got); err != nil {
 		t.Fatalf("output is not valid JSON: %v\n%s", err, out)
 	}
-	providers := got["provider"].(map[string]interface{})
-	if _, ok := providers["anthropic"]; !ok {
-		t.Error("expected existing anthropic provider to be preserved")
-	}
+	providers := got["providers"].(map[string]interface{})
 	if _, ok := providers["llama-cpp"]; !ok {
 		t.Error("expected llama-cpp provider to be present")
+	}
+	legacy := got["provider"].(map[string]interface{})
+	if _, ok := legacy["anthropic"]; !ok {
+		t.Error("expected the legacy anthropic provider block to be preserved")
+	}
+}
+
+func TestMergeReplacesAStaleLegacyProviderBlock(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "opencode.jsonc")
+	// llama-cpp as an older rnes (or v1-era opencode) wrote it, plus an
+	// unrelated v2 provider that must survive.
+	original := `{"provider": {"llama-cpp": {"npm": "@ai-sdk/openai-compatible", "options": {"baseURL": "http://old:1/v1"}}}, "providers": {"other": {"name": "x"}}}`
+	if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	provider := Provider{Package: "aisdk:@ai-sdk/openai-compatible"}
+	if err := Merge(path, "llama-cpp", provider); err != nil {
+		t.Fatalf("Merge failed: %v", err)
+	}
+
+	out, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("output is not valid JSON: %v\n%s", err, out)
+	}
+	if _, ok := got["provider"]; ok {
+		t.Errorf("expected the emptied legacy provider key to be gone, got %v", got["provider"])
+	}
+	providers := got["providers"].(map[string]interface{})
+	if _, ok := providers["other"]; !ok {
+		t.Error("expected the unrelated v2 provider to be preserved")
+	}
+	if _, ok := providers["llama-cpp"]; !ok {
+		t.Error("expected llama-cpp under providers")
 	}
 }
 
@@ -120,7 +159,7 @@ func TestMergeConcurrentWritesDontDropEachOther(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			key := fmt.Sprintf("provider-%d", i)
-			provider := Provider{NPM: "@ai-sdk/openai-compatible"}
+			provider := Provider{Package: "aisdk:@ai-sdk/openai-compatible"}
 			if err := Merge(path, key, provider); err != nil {
 				t.Errorf("Merge %d failed: %v", i, err)
 			}
@@ -136,9 +175,9 @@ func TestMergeConcurrentWritesDontDropEachOther(t *testing.T) {
 	if err := json.Unmarshal(out, &got); err != nil {
 		t.Fatalf("output is not valid JSON: %v\n%s", err, out)
 	}
-	providers, ok := got["provider"].(map[string]interface{})
+	providers, ok := got["providers"].(map[string]interface{})
 	if !ok {
-		t.Fatalf("expected provider map, got %T", got["provider"])
+		t.Fatalf("expected providers map, got %T", got["providers"])
 	}
 	for i := 0; i < n; i++ {
 		key := fmt.Sprintf("provider-%d", i)
@@ -170,15 +209,54 @@ func TestStripJSONComments(t *testing.T) {
 }
 
 func TestDropProviderOptionRemovesOnlyTheNamedOption(t *testing.T) {
-	in := []byte(`{"model":"m","provider":{"openrouter":{"options":{"apiKey":"sk-or-REAL","x":1},"models":{"a":{}}}}}`)
+	// The v2 shape (providers/openrouter/settings) and the pre-migration
+	// shape (provider/legacy/options) both carry an apiKey; each call must
+	// drop only the named provider's named option.
+	in := []byte(`{"model":"m","providers":{"openrouter":{"settings":{"apiKey":"sk-or-REAL","x":1},"models":{"a":{}}}},"provider":{"legacy":{"options":{"apiKey":"sk-or-OLD","y":2}}}}`)
 	out, dropped, err := DropProviderOption(in, "openrouter", "apiKey")
 	if err != nil || !dropped {
 		t.Fatalf("dropped = %v, err = %v", dropped, err)
 	}
-	if strings.Contains(string(out), "sk-or-REAL") || !strings.Contains(string(out), `"x": 1`) || !strings.Contains(string(out), `"models"`) || !strings.Contains(string(out), `"model"`) {
+	if strings.Contains(string(out), "sk-or-REAL") || !strings.Contains(string(out), `"x": 1`) || !strings.Contains(string(out), `"models"`) {
+		t.Errorf("out = %s", out)
+	}
+	out, dropped, err = DropProviderOption(out, "legacy", "apiKey")
+	if err != nil || !dropped {
+		t.Fatalf("legacy: dropped = %v, err = %v", dropped, err)
+	}
+	if strings.Contains(string(out), "sk-or-OLD") || !strings.Contains(string(out), `"y": 2`) || !strings.Contains(string(out), `"model"`) {
 		t.Errorf("out = %s", out)
 	}
 	if _, dropped, _ := DropProviderOption(out, "openrouter", "apiKey"); dropped {
 		t.Error("nothing left to drop, but dropped = true")
+	}
+}
+
+func TestSetModelSetsTheTopLevelDefault(t *testing.T) {
+	in := []byte(`{"theme":"dark","providers":{}}`)
+	out, err := SetModel(in, "llama-cpp/m1")
+	if err != nil {
+		t.Fatalf("SetModel: %v", err)
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("output is not valid JSON: %v\n%s", err, out)
+	}
+	if got["model"] != "llama-cpp/m1" {
+		t.Errorf("model = %v, want llama-cpp/m1", got["model"])
+	}
+	if got["theme"] != "dark" {
+		t.Errorf("theme not preserved: %v", got["theme"])
+	}
+	// An existing default is replaced, not kept.
+	out, err = SetModel(out, "llama-cpp/m2")
+	if err != nil {
+		t.Fatalf("SetModel: %v", err)
+	}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("output is not valid JSON: %v\n%s", err, out)
+	}
+	if got["model"] != "llama-cpp/m2" {
+		t.Errorf("model = %v, want llama-cpp/m2", got["model"])
 	}
 }

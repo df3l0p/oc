@@ -12,12 +12,14 @@ import (
 )
 
 // Provider is the shape opencode expects for a custom OpenAI-compatible
-// provider entry under the top-level "provider" key.
+// provider entry under the top-level "providers" key. Package is the
+// provider's npm package, prefixed with "aisdk:" when it is an AI SDK
+// package (as @ai-sdk/openai-compatible is).
 type Provider struct {
-	NPM     string                 `json:"npm"`
-	Name    string                 `json:"name"`
-	Options map[string]interface{} `json:"options"`
-	Models  map[string]interface{} `json:"models"`
+	Package  string                 `json:"package"`
+	Name     string                 `json:"name"`
+	Settings map[string]interface{} `json:"settings"`
+	Models   map[string]interface{} `json:"models"`
 }
 
 // Merge reads the JSONC config at path (treating a missing file as "{}"),
@@ -104,7 +106,7 @@ func render(raw []byte, providerKey string, provider Provider) ([]byte, error) {
 		}
 	}
 
-	providers, _ := config["provider"].(map[string]interface{})
+	providers, _ := config["providers"].(map[string]interface{})
 	if providers == nil {
 		providers = map[string]interface{}{}
 	}
@@ -114,7 +116,19 @@ func render(raw []byte, providerKey string, provider Provider) ([]byte, error) {
 		return nil, fmt.Errorf("encoding provider block: %w", err)
 	}
 	providers[providerKey] = providerBlock
-	config["provider"] = providers
+	config["providers"] = providers
+
+	// A v1-era opencode (or an older rnes) may have left the same provider
+	// under the singular legacy "provider" key. Delete that entry so the
+	// provider isn't registered twice, dropping the key itself when it
+	// becomes empty. Other providers' legacy blocks are left alone: v2
+	// still accepts them.
+	if legacy, ok := config["provider"].(map[string]interface{}); ok {
+		delete(legacy, providerKey)
+		if len(legacy) == 0 {
+			delete(config, "provider")
+		}
+	}
 
 	out, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
@@ -191,23 +205,58 @@ func stripJSONComments(src []byte) []byte {
 	return out
 }
 
-// DropProviderOption removes provider[providerKey].options[option] from the
-// JSON config in raw, reporting whether it was there. Other keys are untouched.
+// DropProviderOption removes providers[providerKey].settings[option] from
+// the JSON config in raw, reporting whether it was there. For configs last
+// written before the v2 provider migration it also removes the legacy
+// provider[providerKey].options[option]. Other keys are untouched.
 func DropProviderOption(raw []byte, providerKey, option string) ([]byte, bool, error) {
 	var config map[string]interface{}
 	if err := json.Unmarshal(raw, &config); err != nil {
 		return nil, false, fmt.Errorf("parsing: %w", err)
 	}
-	providers, _ := config["provider"].(map[string]interface{})
-	block, _ := providers[providerKey].(map[string]interface{})
-	options, _ := block["options"].(map[string]interface{})
-	if _, ok := options[option]; !ok {
+	dropped := false
+	providers, _ := config["providers"].(map[string]interface{})
+	if block, _ := providers[providerKey].(map[string]interface{}); block != nil {
+		if settings, _ := block["settings"].(map[string]interface{}); settings != nil {
+			if _, ok := settings[option]; ok {
+				delete(settings, option)
+				dropped = true
+			}
+		}
+	}
+	if legacy, _ := config["provider"].(map[string]interface{}); legacy != nil {
+		if block, _ := legacy[providerKey].(map[string]interface{}); block != nil {
+			if options, _ := block["options"].(map[string]interface{}); options != nil {
+				if _, ok := options[option]; ok {
+					delete(options, option)
+					dropped = true
+				}
+			}
+		}
+	}
+	if !dropped {
 		return raw, false, nil
 	}
-	delete(options, option)
 	out, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
 		return nil, false, fmt.Errorf("encoding: %w", err)
 	}
 	return append(out, '\n'), true, nil
+}
+
+// SetModel sets the top-level "model" default in the JSON config in raw, in
+// opencode's "provider/model" format. v2's full TUI has no model flag, so
+// this is how a session starts on a chosen model without touching any
+// config that outlives it.
+func SetModel(raw []byte, model string) ([]byte, error) {
+	var config map[string]interface{}
+	if err := json.Unmarshal(raw, &config); err != nil {
+		return nil, fmt.Errorf("parsing: %w", err)
+	}
+	config["model"] = model
+	out, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("encoding: %w", err)
+	}
+	return append(out, '\n'), nil
 }

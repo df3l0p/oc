@@ -21,9 +21,13 @@ type Harness interface {
 	// Configure points the harness at baseURL under providerKey, offering
 	// the given model ids.
 	Configure(providerKey, baseURL string, modelIDs []string) error
-	// Run launches the harness in dir with modelID (one of the ids given to
-	// Configure, served under providerKey) selected, wiring stdio to the
-	// current process and blocking until it exits.
+	// Run launches the harness in dir, wiring stdio to the current process
+	// and blocking until it exits. Where the harness runs against its own
+	// session-local configuration (the sandbox), it starts on modelID (one
+	// of the ids given to Configure, served under providerKey); where it
+	// runs against the user's own configuration, the model is left to the
+	// agent's session UI, since v2 has no model flag on its full TUI and
+	// the user's configured default must not be rewritten.
 	Run(dir, providerKey, modelID string) error
 }
 

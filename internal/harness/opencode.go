@@ -9,7 +9,7 @@ import (
 	"github.com/df3l0p/rnes/internal/opencodeconfig"
 )
 
-// Opencode drives opencode (github.com/sst/opencode) as a Harness. Its
+// Opencode drives opencode (github.com/anomalyco/opencode) as a Harness. Its
 // config path is fixed to opencode's own default global config location, so
 // rnes always merges into and points opencode at the same file it would use
 // on its own.
@@ -30,17 +30,18 @@ func newOpencode(opts Options) (Harness, error) {
 }
 
 // opencodeProvider builds the provider block that points opencode at a
-// llama-server at baseURL, offering modelIDs.
+// llama-server at baseURL, offering modelIDs. The package is an AI SDK
+// package, so it carries opencode v2's "aisdk:" prefix.
 func opencodeProvider(baseURL string, modelIDs []string) opencodeconfig.Provider {
 	models := make(map[string]interface{}, len(modelIDs))
 	for _, id := range modelIDs {
 		models[id] = map[string]interface{}{"name": id + " (local)"}
 	}
 	return opencodeconfig.Provider{
-		NPM:     "@ai-sdk/openai-compatible",
-		Name:    "llama-server (local)",
-		Options: map[string]interface{}{"baseURL": baseURL + "/v1"},
-		Models:  models,
+		Package:  "aisdk:@ai-sdk/openai-compatible",
+		Name:     "llama-server (local)",
+		Settings: map[string]interface{}{"baseURL": baseURL + "/v1"},
+		Models:   models,
 	}
 }
 
@@ -56,9 +57,13 @@ func (o Opencode) Configure(providerKey, baseURL string, modelIDs []string) erro
 }
 
 func (o Opencode) Run(dir, providerKey, modelID string) error {
-	// -m selects the model for this session only, leaving the user's default
-	// model in their config untouched.
-	cmd := exec.Command("opencode", "-m", providerKey+"/"+modelID, ".")
+	// v2's full TUI has no model flag (v1's -m is gone), and rewriting the
+	// user's configured default model here would outlive the session. So on
+	// the host the session starts on whatever model opencode would pick
+	// anyway, and the llama-server models are one /models selection away;
+	// providerKey and modelID are what the sandbox config writer uses (see
+	// Sandbox.Run). The "." starts opencode in the working directory.
+	cmd := exec.Command("opencode", ".")
 	cmd.Dir = dir
 	// opencode only reads configPath by default when it's left at opencode's
 	// own default global config path, which is exactly what configPath is

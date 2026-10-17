@@ -132,12 +132,15 @@ func TestSandboxConfigureGeneratesRewrittenCopyAndLeavesHostConfigAlone(t *testi
 	if got["theme"] != "dark" {
 		t.Errorf("theme not preserved: %v", got["theme"])
 	}
-	providers := got["provider"].(map[string]interface{})
-	if _, ok := providers["other"]; !ok {
-		t.Errorf("other provider not preserved: %v", providers)
+	// "other" is a legacy-shaped block rnes doesn't manage; render leaves it
+	// where it is, and v2 still accepts legacy provider maps.
+	legacy := got["provider"].(map[string]interface{})
+	if _, ok := legacy["other"]; !ok {
+		t.Errorf("other provider not preserved: %v", legacy)
 	}
+	providers := got["providers"].(map[string]interface{})
 	block := providers["llama-cpp"].(map[string]interface{})
-	if u := block["options"].(map[string]interface{})["baseURL"]; u != "http://host.docker.internal:8080/v1" {
+	if u := block["settings"].(map[string]interface{})["baseURL"]; u != "http://host.docker.internal:8080/v1" {
 		t.Errorf("baseURL = %v, want host.docker.internal", u)
 	}
 	if s.modelServer != "host.docker.internal:8080" {
@@ -159,7 +162,7 @@ func TestSandboxRunArgs(t *testing.T) {
 	s.generated = "/tmp/gen.jsonc"
 	pn := &proxyNet{network: "rnes-net-1-aa", container: "rnes-proxy-1-aa"}
 
-	args := s.runArgs("rnes-1-aa", "/work/proj", "llama-cpp", "m1", pn, false)
+	args := s.runArgs("rnes-1-aa", "/work/proj", pn, false)
 	joined := strings.Join(args, " ")
 	for _, want := range []string{
 		"run --rm --pull=never -i --name rnes-1-aa",
@@ -173,7 +176,7 @@ func TestSandboxRunArgs(t *testing.T) {
 		"-v /work/proj:/workspace",
 		"-v /tmp/gen.jsonc:/etc/rnes/opencode.jsonc:ro",
 		"-e OPENCODE_CONFIG=/etc/rnes/opencode.jsonc",
-		"rnes-sandbox-default:abc123 -m llama-cpp/m1 .",
+		"rnes-sandbox-default:abc123 .",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("args missing %q:\n%s", want, joined)
@@ -185,7 +188,7 @@ func TestSandboxRunArgs(t *testing.T) {
 	if strings.Contains(joined, " -it ") {
 		t.Errorf("-t must not be set without a TTY: %s", joined)
 	}
-	if got := strings.Join(s.runArgs("n", "/d", "p", "m", pn, true), " "); !strings.Contains(got, " -it ") {
+	if got := strings.Join(s.runArgs("n", "/d", pn, true), " "); !strings.Contains(got, " -it ") {
 		t.Errorf("expected -it with a TTY: %s", got)
 	}
 }
@@ -392,7 +395,7 @@ func TestSandboxRunArgsTrustTheSessionCA(t *testing.T) {
 	s.generated = "/tmp/gen.jsonc"
 	pn := &proxyNet{network: "rnes-net-1-aa", container: "rnes-proxy-1-aa", caVolume: "rnes-ca-1-aa"}
 
-	joined := strings.Join(s.runArgs("rnes-1-aa", "/work/proj", "llama-cpp", "m1", pn, false), " ")
+	joined := strings.Join(s.runArgs("rnes-1-aa", "/work/proj", pn, false), " ")
 	for _, want := range []string{
 		// Not under /etc/rnes, where the generated config is bind-mounted.
 		"-v rnes-ca-1-aa:/etc/rnes-ca:ro",
@@ -418,7 +421,7 @@ func TestSandboxRunArgsWithoutAProxyCAMountNothing(t *testing.T) {
 	s.generated = "/tmp/gen.jsonc"
 	pn := &proxyNet{network: "rnes-net-1-aa", container: "rnes-proxy-1-aa"}
 
-	joined := strings.Join(s.runArgs("rnes-1-aa", "/work/proj", "llama-cpp", "m1", pn, false), " ")
+	joined := strings.Join(s.runArgs("rnes-1-aa", "/work/proj", pn, false), " ")
 	for _, bad := range []string{"rnes-ca", "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "GIT_SSL_CAINFO", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE"} {
 		if strings.Contains(joined, bad) {
 			t.Errorf("without inspection, args must not mention %q: %s", bad, joined)
@@ -442,7 +445,7 @@ func TestRunArgsGiveTheSandboxOnlyThePlaceholder(t *testing.T) {
 	s.image, s.generated = "rnes-sandbox-default:x", "/tmp/cfg"
 	s.githubPlaceholder = "rnes_placeholder_abc"
 	pn := &proxyNet{network: "rnes-net-1", container: "rnes-proxy-1"}
-	joined := strings.Join(s.runArgs("rnes-1-aa", "/work/proj", "llama-cpp", "m1", pn, false), " ")
+	joined := strings.Join(s.runArgs("rnes-1-aa", "/work/proj", pn, false), " ")
 	if strings.Contains(joined, "github_pat_SECRET") {
 		t.Fatalf("the real token is in the sandbox's argv: %s", joined)
 	}
@@ -466,7 +469,7 @@ func TestRunArgsWithoutAGitHubTokenSetNoGitHubEnv(t *testing.T) {
 	s := newSandbox(Options{Sandbox: true}, "")
 	s.image, s.generated = "rnes-sandbox-default:x", "/tmp/cfg"
 	pn := &proxyNet{network: "rnes-net-1", container: "rnes-proxy-1"}
-	joined := strings.Join(s.runArgs("rnes-1-aa", "/work/proj", "llama-cpp", "m1", pn, false), " ")
+	joined := strings.Join(s.runArgs("rnes-1-aa", "/work/proj", pn, false), " ")
 	for _, bad := range []string{"GH_TOKEN", "GIT_CONFIG_COUNT"} {
 		if strings.Contains(joined, bad) {
 			t.Errorf("run args mention %s without a token: %s", bad, joined)
@@ -548,7 +551,7 @@ func TestOpenRouterKeyIsGatedInPolicyEnvAndConfig(t *testing.T) {
 		t.Errorf("one line with both providers wanted, got %q, %v", b, err)
 	}
 	pn := &proxyNet{network: "rnes-net-1", container: "rnes-proxy-1"}
-	joined := strings.Join(s.runArgs("rnes-1-aa", "/work/proj", "llama-cpp", "m1", pn, false), " ")
+	joined := strings.Join(s.runArgs("rnes-1-aa", "/work/proj", pn, false), " ")
 	if strings.Contains(joined, "sk-or-SECRET") || !strings.Contains(joined, "-e OPENROUTER_API_KEY=ph_or") {
 		t.Errorf("run args = %s", joined)
 	}
@@ -577,7 +580,7 @@ func TestSandboxRunSendsTheOpenRouterKeyOnStdinNotArgv(t *testing.T) {
 
 func TestConfigureDropsALiteralOpenRouterKeyFromTheHostConfig(t *testing.T) {
 	host := filepath.Join(t.TempDir(), "opencode.jsonc")
-	if err := os.WriteFile(host, []byte(`{"provider":{"openrouter":{"options":{"apiKey":"sk-or-REAL"}}}}`), 0o600); err != nil {
+	if err := os.WriteFile(host, []byte(`{"providers":{"openrouter":{"settings":{"apiKey":"sk-or-REAL"}}}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	for key, wantGone := range map[string]bool{"sk-or-SECRET": true, "": false} {
@@ -597,7 +600,7 @@ func TestSandboxRunArgsWithoutSkillsAreUnchanged(t *testing.T) {
 	s := newSandbox(Options{Sandbox: true}, "")
 	s.image, s.generated = "rnes-sandbox-default:x", "/tmp/cfg"
 	pn := &proxyNet{network: "rnes-net-1", container: "rnes-proxy-1"}
-	joined := strings.Join(s.runArgs("rnes-1-aa", "/work/proj", "llama-cpp", "m1", pn, false), " ")
+	joined := strings.Join(s.runArgs("rnes-1-aa", "/work/proj", pn, false), " ")
 	for _, bad := range []string{"--mount", ".config", "skills"} {
 		if strings.Contains(joined, bad) {
 			t.Errorf("without skills, args must not mention %q: %s", bad, joined)
@@ -613,7 +616,7 @@ func TestSandboxRunArgsMountEachSkillReadOnly(t *testing.T) {
 	s.image, s.generated = "rnes-sandbox-default:x", "/tmp/cfg"
 	s.configHome = "/tmp/rnes-sandbox-home-config-1"
 	pn := &proxyNet{network: "rnes-net-1", container: "rnes-proxy-1"}
-	args := s.runArgs("rnes-1-aa", "/work/proj", "llama-cpp", "m1", pn, false)
+	args := s.runArgs("rnes-1-aa", "/work/proj", pn, false)
 	joined := strings.Join(args, " ")
 	for _, want := range []string{
 		"--mount type=bind,source=/tmp/rnes-sandbox-home-config-1,target=/home/rnes/.config ",

@@ -24,7 +24,7 @@ func TestOpencodeConfigureWritesAllDiscoveredModels(t *testing.T) {
 		t.Fatalf("output is not valid JSON: %v\n%s", err, out)
 	}
 
-	providers := got["provider"].(map[string]interface{})
+	providers := got["providers"].(map[string]interface{})
 	block := providers["llama-cpp"].(map[string]interface{})
 	models := block["models"].(map[string]interface{})
 
@@ -33,7 +33,10 @@ func TestOpencodeConfigureWritesAllDiscoveredModels(t *testing.T) {
 			t.Errorf("expected model %q to be configured, got %v", id, models)
 		}
 	}
-	if got := block["options"].(map[string]interface{})["baseURL"]; got != "http://127.0.0.1:8080/v1" {
+	if block["package"] != "aisdk:@ai-sdk/openai-compatible" {
+		t.Errorf("package = %v, want aisdk:@ai-sdk/openai-compatible", block["package"])
+	}
+	if got := block["settings"].(map[string]interface{})["baseURL"]; got != "http://127.0.0.1:8080/v1" {
 		t.Errorf("baseURL = %v, want http://127.0.0.1:8080/v1", got)
 	}
 }

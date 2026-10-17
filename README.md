@@ -19,7 +19,7 @@ Concretely, running `rnes` in a project:
 
 ## Requirements
 
-- [opencode](https://opencode.ai) on `PATH` (the only harness today).
+- [opencode](https://opencode.ai) v2 on `PATH` (the only harness today).
 - llama.cpp on `PATH`: either the unified `llama` CLI (`llama serve`) or the
   older standalone `llama-server` binary. On macOS, `brew install llama.cpp`
   provides both.
@@ -44,13 +44,16 @@ rnes
 ```
 
 This starts (or reuses) a llama-server serving the default model, merges a
-`llama-cpp` provider into opencode's config, and runs `opencode .`.
+`llama-cpp` provider into opencode's config, and runs `opencode .`. opencode
+v2's full-screen UI has no model flag, so on the host you pick the
+llama-server model with `/models`; in the sandbox, rnes writes the model into
+the session's generated config so it starts on it.
 
 ### Flags
 
 | Flag        | Default                                          | Description                                     |
 |-------------|---------------------------------------------------|--------------------------------------------------|
-| `-model`    | `unsloth/Qwen3.6-35B-A3B-GGUF:Q4_K_M`             | Model to select in the agent (quant optional; downloaded if not cached) |
+| `-model`    | `unsloth/Qwen3.6-35B-A3B-GGUF:Q4_K_M`             | Model to serve (the sandbox boots on it; on the host, select it via `/models`) |
 | `-host`     | `127.0.0.1`                                       | llama-server host (with `-sandbox`, the narrowest address containers can reach; see below) |
 | `-port`     | `8080`                                            | llama-server port                                |
 | `-harness`  | `opencode`                                        | Coding agent to run                              |
@@ -112,14 +115,14 @@ opencode).
   `rnes` never pulls a sandbox image from a registry: a missing image is built
   from its Dockerfile (a build failure is an error). `-build` rebuilds the
   images from scratch, ignoring docker's layer cache, so it also picks up new
-  apt package versions and a newer `opencode-ai`; without it, an existing image
+  apt package versions and a newer `@opencode/cli`; without it, an existing image
   is reused indefinitely. `-sandbox-update` is the same rebuild, but of every bundled
   image (or only `-image`'s, if given), and it exits instead of running a
   session (it implies `-sandbox` and `-build`).
   Images are tagged `rnes-sandbox-<name>:<hash>` from the Dockerfile's contents
   (and that of the base), so a changed Dockerfile builds a new image and an
   unchanged one is reused. Note the build itself still fetches the
-  `node:22-slim` base image, apt packages and the `opencode-ai` npm package; to
+  `node:22-slim` base image, apt packages and the `@opencode/cli` npm package; to
   control that, review or pin them in the Dockerfiles. Old tags are not
   removed automatically; list them with `docker images 'rnes-sandbox-*'` and
   delete the ones you no longer need with `docker rmi`.
