@@ -18,9 +18,6 @@ import (
 // on its own.
 type Opencode struct {
 	configPath string
-	// skillCommands generates a /<name> command for every skill in the
-	// default skill folders (see package skills), unless disabled.
-	skillCommands bool
 }
 
 func newOpencode(opts Options) (Harness, error) {
@@ -32,7 +29,7 @@ func newOpencode(opts Options) (Harness, error) {
 	if opts.Sandbox {
 		return newSandbox(opts, configPath), nil
 	}
-	return Opencode{configPath: configPath, skillCommands: !opts.NoSkillCommands}, nil
+	return Opencode{configPath: configPath}, nil
 }
 
 // opencodeProvider builds the provider block that points opencode at a
@@ -101,17 +98,14 @@ func (o Opencode) Run(dir, providerKey, modelID string) error {
 // session-local OPENCODE_CONFIG always: opencode only reads configPath by
 // default when it's left at opencode's own default global config path, which
 // is exactly what configPath is here, so this keeps working even if a future
-// rnes option makes configPath configurable again. Plus — unless disabled —
-// the generated skill commands: they ride in OPENCODE_CONFIG_CONTENT (see
-// package skills), which only a server started with it in sight reads, so a
-// session with commands runs opencode with --standalone (its own server)
-// instead of the shared background one, which would silently ignore the
-// variable. With no commands to generate, the launch is unchanged.
+// rnes option makes configPath configurable again. Plus the generated skill
+// commands: they ride in OPENCODE_CONFIG_CONTENT (see opencode_commands.go),
+// which only a server started with it in sight reads, so a session with
+// commands runs opencode with --standalone (its own server) instead of the
+// shared background one, which would silently ignore the variable. With no
+// skills to generate commands for, the launch is unchanged.
 func (o Opencode) launch(dir string) ([]string, []string) {
 	env := append(os.Environ(), "OPENCODE_CONFIG="+o.configPath)
-	if !o.skillCommands {
-		return []string{"."}, env
-	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "rnes: warning: no skill commands: resolving home directory: %v\n", err)
@@ -125,7 +119,7 @@ func (o Opencode) launch(dir string) ([]string, []string) {
 	for _, s := range found {
 		names = append(names, s.Name)
 	}
-	names, warns = skills.CommandNames(dir, names)
+	names, warns = commandNames(dir, names)
 	for _, w := range warns {
 		fmt.Fprintf(os.Stderr, "rnes: warning: %s\n", w)
 	}
@@ -133,5 +127,5 @@ func (o Opencode) launch(dir string) ([]string, []string) {
 		return []string{"."}, env
 	}
 	fmt.Fprintf(os.Stderr, "rnes: skill commands: /%s\n", strings.Join(names, ", /"))
-	return []string{"--standalone", "."}, append(env, "OPENCODE_CONFIG_CONTENT="+skills.ConfigContent(names))
+	return []string{"--standalone", "."}, append(env, "OPENCODE_CONFIG_CONTENT="+configContent(names))
 }

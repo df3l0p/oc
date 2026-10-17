@@ -98,9 +98,6 @@ type Sandbox struct {
 	openrouterPlaceholder string
 	// skills are mounted read-only under containerSkillsDir.
 	skills []skills.Skill
-	// noSkillCommands skips writing a /<name> command per attached skill
-	// into the staged ~/.config (see package skills).
-	noSkillCommands bool
 	// configHome is the host staging directory mounted as the agent's
 	// ~/.config when skills are attached, set by Run.
 	configHome string
@@ -130,7 +127,7 @@ func newSandbox(opts Options, hostConfig string) *Sandbox {
 	if name == "" {
 		name = images.Default
 	}
-	return &Sandbox{name: name, build: opts.Build, allNet: opts.AllNet, inspect: !opts.NoInspect, githubToken: opts.GitHubToken, openrouterKey: opts.OpenRouterKey, skills: opts.Skills, noSkillCommands: opts.NoSkillCommands, hostConfig: hostConfig, hostIP: "host-gateway"}
+	return &Sandbox{name: name, build: opts.Build, allNet: opts.AllNet, inspect: !opts.NoInspect, githubToken: opts.GitHubToken, openrouterKey: opts.OpenRouterKey, skills: opts.Skills, hostConfig: hostConfig, hostIP: "host-gateway"}
 }
 
 // BindHost returns the address llama-server should listen on so the container
@@ -549,27 +546,24 @@ func stageConfigHome(attached []skills.Skill) (string, error) {
 }
 
 // addSkillCommands writes a /<name> command file per attached skill into
-// the staged ~/.config (see package skills), so the session can invoke
+// the staged ~/.config (see opencode_commands.go), so the session can invoke
 // them like host commands. A skill whose name the project (cwd, mounted at
 // containerWorkdir) already uses for a command is skipped with a warning;
 // project commands win in the container anyway. A failed write warns but
 // doesn't stop the session: the skills themselves still work.
 func (s *Sandbox) addSkillCommands(home, cwd string) {
-	if s.noSkillCommands {
-		return
-	}
 	names := make([]string, 0, len(s.skills))
 	for _, sk := range s.skills {
 		names = append(names, sk.Name)
 	}
-	names, warnings := skills.CommandNames(cwd, names)
+	names, warnings := commandNames(cwd, names)
 	for _, w := range warnings {
 		fmt.Fprintf(os.Stderr, "rnes: warning: %s\n", w)
 	}
 	if len(names) == 0 {
 		return
 	}
-	if err := skills.WriteCommandFiles(home, names); err != nil {
+	if err := writeCommandFiles(home, names); err != nil {
 		fmt.Fprintf(os.Stderr, "rnes: warning: writing the sandbox's skill commands: %v\n", err)
 		return
 	}

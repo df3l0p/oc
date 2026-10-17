@@ -52,9 +52,6 @@ type cliConfig struct {
 	// -skills-dir folders, both in the order given.
 	skills     stringList
 	skillsDirs stringList
-	// noSkillCommands skips the /command generated per skill (see the
-	// -no-skill-commands flag).
-	noSkillCommands bool
 }
 
 // stringList is a repeatable string flag.
@@ -248,7 +245,6 @@ func parseFlags() (cliConfig, error) {
 	flag.BoolVar(&cfg.noInspect, "no-inspect", false, "don't terminate TLS in the sandbox's proxy: tunnel every HTTPS connection unread (by default the proxy decrypts the allow-listed hosts with a CA made for the session, and logs each request); requires -sandbox")
 	flag.Var(&cfg.skills, "skill", "attach a host opencode skill to the sandbox, read-only: a skill name (looked up in each -skills-dir, then ~/.config/opencode/skills, ~/.agents/skills and ~/.claude/skills), a path to one skill directory, or \"all\"; repeatable; requires -sandbox")
 	flag.Var(&cfg.skillsDirs, "skills-dir", "a host folder whose subdirectories are skills, searched before the default ones for -skill names and \"all\"; attaches nothing on its own; repeatable; requires -sandbox")
-	flag.BoolVar(&cfg.noSkillCommands, "no-skill-commands", false, "don't create a /command per skill (host: the skills in ~/.config/opencode/skills, ~/.agents/skills and ~/.claude/skills; sandbox: the attached ones)")
 	flag.Usage = func() { usage(os.Stderr) }
 	flag.Parse()
 	flag.Visit(func(f *flag.Flag) {
@@ -291,7 +287,7 @@ func run() error {
 		return err
 	}
 
-	h, err := harness.New(cfg.harness, harness.Options{Sandbox: cfg.sandbox, Image: cfg.image, Build: cfg.build, AllNet: cfg.allNet, NoInspect: cfg.noInspect, GitHubToken: cfg.githubToken, OpenRouterKey: cfg.openrouterKey, Skills: attached, NoSkillCommands: cfg.noSkillCommands})
+	h, err := harness.New(cfg.harness, harness.Options{Sandbox: cfg.sandbox, Image: cfg.image, Build: cfg.build, AllNet: cfg.allNet, NoInspect: cfg.noInspect, GitHubToken: cfg.githubToken, OpenRouterKey: cfg.openrouterKey, Skills: attached})
 	if err != nil {
 		return err
 	}

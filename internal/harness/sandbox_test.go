@@ -750,21 +750,10 @@ func TestAddSkillCommandsWritesFilesAndSkipsProjectCollisions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading alpha command: %v", err)
 	}
-	if string(raw) != skills.CommandMarkdown("alpha") {
-		t.Errorf("alpha command = %q, want %q", raw, skills.CommandMarkdown("alpha"))
+	if string(raw) != commandMarkdown("alpha") {
+		t.Errorf("alpha command = %q, want %q", raw, commandMarkdown("alpha"))
 	}
 	if _, err := os.Stat(filepath.Join(home, "opencode", "commands", "beta.md")); err == nil {
 		t.Errorf("a beta command was written although the project defines one")
-	}
-}
-
-func TestAddSkillCommandsDisabled(t *testing.T) {
-	s := newSandbox(Options{Sandbox: true, NoSkillCommands: true, Skills: []skills.Skill{
-		{Name: "alpha", Dir: "/host/alpha"},
-	}}, "")
-	home := t.TempDir()
-	s.addSkillCommands(home, t.TempDir())
-	if _, err := os.Stat(filepath.Join(home, "opencode", "commands")); err == nil {
-		t.Errorf("a commands directory was written although -no-skill-commands was given")
 	}
 }

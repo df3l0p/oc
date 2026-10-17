@@ -82,10 +82,6 @@ type Options struct {
 	// Skills are host skills to mount read-only into the sandbox, where
 	// opencode looks for global skills (with Sandbox; see package skills).
 	Skills []skills.Skill
-	// NoSkillCommands turns off the /<name> command rnes generates for each
-	// skill: on the host, for every skill in the default skill folders; in
-	// the sandbox, for the attached ones. See package skills.
-	NoSkillCommands bool
 }
 
 // registry maps a harness name, as accepted by rnes's --harness flag, to a

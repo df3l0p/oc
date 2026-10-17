@@ -65,7 +65,6 @@ the session's generated config so it starts on it.
 | `-no-inspect` | off                                             | Don't decrypt the sandbox's HTTPS in the proxy; tunnel it unread (requires `-sandbox`; see below) |
 | `-skill`    | none                                              | Attach a host skill to the sandbox, read-only: a name, a path to a skill directory, or `all`. Repeatable (requires `-sandbox`; see *Skills* below) |
 | `-skills-dir` | none                                            | Add a host folder of skills to search, before the default ones, for `-skill` names and `all`; attaches nothing on its own. Repeatable (requires `-sandbox`) |
-| `-no-skill-commands` | off                                      | Don't create a `/command` per skill (host: the skills in the default skill folders; sandbox: the attached ones; see *Skills* below) |
 
 Each harness owns its own config path internally (opencode's is its default
 global config, `~/.config/opencode/opencode.jsonc`) — there's no flag for it.
@@ -304,8 +303,7 @@ rnes -sandbox -skills-dir ~/team-skills -skill deploy
   skills. A skill whose name the project already uses for a command
   (`.opencode/commands/<name>.md`, or the project's `opencode.json(c)`
   `commands`) is skipped with a warning, so the project's own command keeps
-  working everywhere; the skill itself is unaffected. `-no-skill-commands`
-  turns the generation off.
+  working everywhere; the skill itself is unaffected.
 - **Output:** `rnes` prints one line listing the attached skills and the folder
   each came from; warnings go to stderr as `rnes: warning: …`. More than 50
   skills (one mount each) prints a warning, as does `-skill all` finding

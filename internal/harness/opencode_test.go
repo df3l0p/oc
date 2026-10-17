@@ -6,8 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/df3l0p/rnes/internal/skills"
 )
 
 func TestOpencodeConfigureWritesAllDiscoveredModels(t *testing.T) {
@@ -63,7 +61,7 @@ func TestOpencodeLaunchWithSkillCommands(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	configPath := filepath.Join(home, ".config", "opencode", "opencode.jsonc")
-	o := Opencode{configPath: configPath, skillCommands: true}
+	o := Opencode{configPath: configPath}
 
 	// No skills in the default folders: the plain launch, no environment.
 	args, env := o.launch(t.TempDir())
@@ -100,30 +98,9 @@ func TestOpencodeLaunchWithSkillCommands(t *testing.T) {
 	if len(args) != 2 || args[0] != "--standalone" || args[1] != "." {
 		t.Errorf("args = %q, want [--standalone .]", args)
 	}
-	want := "OPENCODE_CONFIG_CONTENT=" + skills.ConfigContent([]string{"alpha"})
+	want := "OPENCODE_CONFIG_CONTENT=" + configContent([]string{"alpha"})
 	if !hasEnv(env, want) {
 		t.Errorf("env = %q, want %q (beta is the project's own command)", env, want)
-	}
-}
-
-func TestOpencodeLaunchDisabled(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	skillsDir := filepath.Join(home, ".config", "opencode", "skills")
-	p := filepath.Join(skillsDir, "alpha")
-	if err := os.MkdirAll(p, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(p, "SKILL.md"), []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	o := Opencode{configPath: filepath.Join(home, "opencode.jsonc")}
-	args, env := o.launch(t.TempDir())
-	if len(args) != 1 || args[0] != "." {
-		t.Errorf("args = %q, want [.] (disabled: launch unchanged)", args)
-	}
-	if hasEnvPrefix(env, "OPENCODE_CONFIG_CONTENT=") {
-		t.Errorf("env = %q, want no OPENCODE_CONFIG_CONTENT when disabled", env)
 	}
 }
 
