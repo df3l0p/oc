@@ -329,13 +329,17 @@ func (s *Sandbox) Run(dir, providerKey, modelID string) error {
 		return err
 	}
 
-	if len(s.skills) > 0 {
+	// The staged ~/.config holds the attached skills' mount points and the
+	// skill commands, so it exists when either does: the project's own skills
+	// get commands even when no -skill was given.
+	commands := s.skillCommandNames(dir)
+	if len(s.skills) > 0 || len(commands) > 0 {
 		home, err := stageConfigHome(s.skills)
 		if err != nil {
 			return err
 		}
 		s.configHome = home
-		s.addSkillCommands(home, dir)
+		s.writeSkillCommands(home, commands)
 		defer func() {
 			if err := os.RemoveAll(home); err != nil {
 				fmt.Fprintf(os.Stderr, "rnes: warning: couldn't remove the sandbox's ~/.config staging directory %s: %v\n", home, err)
@@ -491,17 +495,18 @@ func newPlaceholder() (string, error) {
 	return "rnes_placeholder_" + hex.EncodeToString(b[:]), nil
 }
 
-// skillMounts are the docker arguments that attach s.skills: each skill's
-// directory bind-mounted read-only at containerSkillsDir/<name>, so it stays
-// live and nothing else on the host is visible. A symlink inside a skill
-// resolves in the container, so one pointing outside its directory dangles.
+// skillMounts are the docker arguments for the staged ~/.config (nothing when
+// the session has none) and for attaching s.skills: each skill's directory
+// bind-mounted read-only at containerSkillsDir/<name>, so it stays live and
+// nothing else on the host is visible. A symlink inside a skill resolves in
+// the container, so one pointing outside its directory dangles.
 //
 // Docker would create the mount points' missing parents (~/.config,
 // ~/.config/opencode) root-owned, leaving opencode unable to write its config
 // directory. So ~/.config itself is a host staging directory owned by the
 // session's user, with the mount points already in it (see stageConfigHome).
 func (s *Sandbox) skillMounts() []string {
-	if len(s.skills) == 0 {
+	if s.configHome == "" {
 		return nil
 	}
 	args := []string{"--mount", bindMount(s.configHome, containerConfigHome, false)}
@@ -546,27 +551,20 @@ func stageConfigHome(attached []skills.Skill) (string, error) {
 	return dir, nil
 }
 
-// addSkillCommands writes a /<name> command file per skill the sandbox has —
+// skillCommandNames lists the skills the sandbox gets a /<name> command for:
 // the attached ones plus the project's own, which come through the mounted
-// workdir — into the staged ~/.config (see opencode_commands.go), so the
-// session can invoke them like host commands. A skill whose name the project
-// already uses for a command is skipped with a warning; project commands win
-// in the container anyway. Only cwd is checked, not its ancestors: only the
-// workdir is mounted, so host ancestors are not visible in the container. A
-// failed write warns but doesn't stop the session: the skills themselves
-// still work.
-func (s *Sandbox) addSkillCommands(home, cwd string) {
+// workdir. A name opencode already has a command for is left out with a
+// warning (see commandNames); project commands win in the container anyway.
+// Only cwd is checked, not its ancestors: only the workdir is mounted, so
+// host ancestors are not visible in the container.
+func (s *Sandbox) skillCommandNames(cwd string) []string {
 	names := make([]string, 0, len(s.skills))
 	seen := make(map[string]bool, len(s.skills))
 	for _, sk := range s.skills {
 		names = append(names, sk.Name)
 		seen[sk.Name] = true
 	}
-	project, warns := skills.DiscoverProject(cwd)
-	for _, w := range warns {
-		fmt.Fprintf(os.Stderr, "rnes: warning: %s\n", w)
-	}
-	for _, sk := range project {
+	for _, sk := range skills.DiscoverProject(cwd) {
 		if !seen[sk.Name] {
 			names = append(names, sk.Name)
 			seen[sk.Name] = true
@@ -577,6 +575,14 @@ func (s *Sandbox) addSkillCommands(home, cwd string) {
 	for _, w := range warnings {
 		fmt.Fprintf(os.Stderr, "rnes: warning: %s\n", w)
 	}
+	return names
+}
+
+// writeSkillCommands writes a /<name> command file per name into the staged
+// ~/.config (see opencode_commands.go), so the session can invoke the skills
+// like host commands. A failed write warns but doesn't stop the session: the
+// skills themselves still work.
+func (s *Sandbox) writeSkillCommands(home string, names []string) {
 	if len(names) == 0 {
 		return
 	}

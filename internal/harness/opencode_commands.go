@@ -46,25 +46,95 @@ func commandMarkdown(name string) string {
 	return fmt.Sprintf("---\ndescription: Run the %s skill\n---\n\n%s\n", name, commandTemplate(name))
 }
 
+// inlineConfigEnv is the environment variable that carries an inline opencode
+// config, merged above every file-based source.
+const inlineConfigEnv = "OPENCODE_CONFIG_CONTENT"
+
+// commandDef is a command in an opencode config's commands map.
+type commandDef struct {
+	Description string `json:"description"`
+	Template    string `json:"template"`
+}
+
+func newCommandDef(name string) commandDef {
+	return commandDef{Description: "Run the " + name + " skill", Template: commandTemplate(name)}
+}
+
 // configContent is the inline opencode config defining a command per name,
 // for OPENCODE_CONFIG_CONTENT on the host. Empty for no names.
 func configContent(names []string) string {
 	if len(names) == 0 {
 		return ""
 	}
-	type def struct {
-		Description string `json:"description"`
-		Template    string `json:"template"`
-	}
-	commands := make(map[string]def, len(names))
+	commands := make(map[string]commandDef, len(names))
 	for _, n := range names {
-		commands[n] = def{Description: "Run the " + n + " skill", Template: commandTemplate(n)}
+		commands[n] = newCommandDef(n)
 	}
-	out, err := json.Marshal(map[string]map[string]def{"commands": commands})
+	out, err := json.Marshal(map[string]map[string]commandDef{"commands": commands})
 	if err != nil {
 		return "" // unreachable: plain JSON data
 	}
 	return string(out)
+}
+
+// parseInline splits an inline opencode config, which must be a plain JSON
+// object, into its top-level keys and its commands map. Either may come back
+// nil when the config has none.
+func parseInline(content string) (top, commands map[string]json.RawMessage, err error) {
+	if err := json.Unmarshal([]byte(content), &top); err != nil {
+		return nil, nil, err
+	}
+	if raw, ok := top["commands"]; ok {
+		if err := json.Unmarshal(raw, &commands); err != nil {
+			return nil, nil, fmt.Errorf("its commands: %w", err)
+		}
+	}
+	return top, commands, nil
+}
+
+// mergeConfigContent adds a command per name to the user's own inline config,
+// leaving every other setting, and any command they already define, as it is.
+func mergeConfigContent(existing string, names []string) (string, error) {
+	top, commands, err := parseInline(existing)
+	if err != nil {
+		return "", err
+	}
+	if top == nil {
+		top = map[string]json.RawMessage{}
+	}
+	if commands == nil {
+		commands = map[string]json.RawMessage{}
+	}
+	for _, n := range names {
+		if _, ok := commands[n]; ok {
+			continue
+		}
+		raw, err := json.Marshal(newCommandDef(n))
+		if err != nil {
+			return "", err
+		}
+		commands[n] = raw
+	}
+	if top["commands"], err = json.Marshal(commands); err != nil {
+		return "", err
+	}
+	out, err := json.Marshal(top)
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
+// withEnv returns env with key set to value, replacing any earlier entry
+// rather than leaving a duplicate whose winner depends on the reader.
+func withEnv(env []string, key, value string) []string {
+	out := make([]string, 0, len(env)+1)
+	for _, e := range env {
+		if !strings.HasPrefix(e, key+"=") {
+			out = append(out, e)
+		}
+	}
+	return append(out, key+"="+value)
 }
 
 // builtinCommands are opencode's own slash commands (see the TUI docs); a
@@ -88,6 +158,9 @@ type commandScope struct {
 	// globalDir is the user's opencode config directory; "" when the session
 	// cannot see it (the sandbox's staged ~/.config hides it).
 	globalDir string
+	// extra are commands defined somewhere other than those files (the
+	// user's own OPENCODE_CONFIG_CONTENT), by name with where they come from.
+	extra map[string]string
 }
 
 // commandNames picks the names worth a generated command. A name opencode
@@ -120,6 +193,7 @@ func commandNames(scope commandScope, names []string) ([]string, []string) {
 // to scope.stop, plus the global config directory when the scope has one.
 func commandsVisibleTo(scope commandScope) (map[string]string, []string) {
 	out := map[string]string{}
+	addCommands(out, scope.extra)
 	var warnings []string
 	for dir := scope.cwd; ; dir = filepath.Dir(dir) {
 		addCommands(out, commandFiles(filepath.Join(dir, ".opencode", "commands")))

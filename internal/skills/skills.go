@@ -32,8 +32,9 @@ const maxNameLen = 64
 var namePattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 
 // projectDirs are where opencode looks for a project's own skills, relative to
-// the working directory.
-var projectDirs = []string{".opencode/skills", ".claude/skills", ".agents/skills"}
+// the working directory. .opencode/skill is the legacy singular form, which
+// opencode v2 still reads.
+var projectDirs = []string{".opencode/skills", ".opencode/skill", ".claude/skills", ".agents/skills"}
 
 // Skill is one skill to attach.
 type Skill struct {
@@ -365,18 +366,27 @@ func (r *resolver) all() {
 }
 
 // DiscoverProject lists the skills the project at cwd defines, in its
-// .opencode/skills, .claude/skills and .agents/skills folders. Invalid
-// entries are skipped with a warning, like -skill all.
-func DiscoverProject(cwd string) ([]Skill, []string) {
-	return discover(projectSources(cwd))
+// .opencode/skills (and legacy .opencode/skill), .claude/skills and
+// .agents/skills folders. It is for a session that only sees cwd (the
+// sandbox mounts just the working directory). Like DiscoverAll, it skips
+// entries that aren't valid skills without a word.
+func DiscoverProject(cwd string) []Skill {
+	return discover(projectSources(cwd, false))
 }
 
-// DiscoverAll lists every skill a host session in cwd has available: the
-// project's own skills first (they outrank global ones in opencode), then the
-// default global folders. The first source wins a name. Invalid entries are
-// skipped with a warning, like -skill all.
-func DiscoverAll(home, cwd string) ([]Skill, []string) {
-	srcs := projectSources(cwd)
+// DiscoverAll lists the skills a host session in cwd has available: the
+// project's own (the working directory, and each parent up to the
+// repository root, nearer ones winning a name), then the global folders. The
+// first source wins a name.
+//
+// Nothing was asked for here, unlike -skill all, so an entry that isn't a
+// valid skill is skipped silently rather than warned about on every launch.
+// The scope is also narrower than opencode's: a skill must be a folder with
+// a SKILL.md directly inside a skills folder, with a name that is a valid
+// skill name, so flat skills/<name>.md files, deeper SKILL.md files and
+// unconventional names get no command.
+func DiscoverAll(home, cwd string) []Skill {
+	srcs := projectSources(cwd, true)
 	for _, d := range globalSources(home) {
 		if fi, err := os.Stat(d); err == nil && fi.IsDir() {
 			srcs = append(srcs, d)
@@ -385,36 +395,62 @@ func DiscoverAll(home, cwd string) ([]Skill, []string) {
 	return discover(srcs)
 }
 
-// projectSources are the project's skill folders that exist, in opencode's
-// precedence order.
-func projectSources(cwd string) []string {
+// projectSources are the skill folders that exist in the project, nearest
+// first and in opencode's precedence order within a directory. With walk,
+// that is cwd and every parent up to the repository root (the nearest
+// directory holding a .git); without a repository above cwd, or without
+// walk, cwd alone.
+func projectSources(cwd string, walk bool) []string {
 	var out []string
-	for _, d := range projectDirs {
-		p := filepath.Join(cwd, d)
-		if fi, err := os.Stat(p); err == nil && fi.IsDir() {
-			out = append(out, p)
+	for _, dir := range projectLevels(cwd, walk) {
+		for _, d := range projectDirs {
+			p := filepath.Join(dir, d)
+			if fi, err := os.Stat(p); err == nil && fi.IsDir() {
+				out = append(out, p)
+			}
 		}
 	}
 	return out
 }
 
-// globalSources are the host folders opencode reads global skills from, in
-// precedence order. OPENCODE_CONFIG_DIR replaces opencode's global config
-// directory, and so its skills folder, but not the .agents and .claude
-// compatibility folders.
-func globalSources(home string) []string {
-	if dir := os.Getenv("OPENCODE_CONFIG_DIR"); dir != "" {
-		return []string{
-			filepath.Join(dir, "skills"),
-			filepath.Join(home, ".agents", "skills"),
-			filepath.Join(home, ".claude", "skills"),
+// projectLevels are the directories projectSources looks in, nearest first.
+func projectLevels(cwd string, walk bool) []string {
+	if !walk {
+		return []string{cwd}
+	}
+	var levels []string
+	for dir := cwd; ; dir = filepath.Dir(dir) {
+		levels = append(levels, dir)
+		if _, err := os.Lstat(filepath.Join(dir, ".git")); err == nil {
+			return levels
+		}
+		if filepath.Dir(dir) == dir {
+			return []string{cwd}
 		}
 	}
-	return DefaultSources(home)
+}
+
+// globalSources are the host folders opencode reads global skills from, in
+// precedence order. OPENCODE_CONFIG_DIR replaces opencode's global config
+// directory, and so its skills folders, but not the .agents and .claude
+// compatibility folders. Unlike DefaultSources it includes the legacy
+// singular skill folder, which opencode v2 still reads but -skill doesn't
+// search.
+func globalSources(home string) []string {
+	cfg := filepath.Join(home, ".config", "opencode")
+	if dir := os.Getenv("OPENCODE_CONFIG_DIR"); dir != "" {
+		cfg = dir
+	}
+	return []string{
+		filepath.Join(cfg, "skills"),
+		filepath.Join(cfg, "skill"),
+		filepath.Join(home, ".agents", "skills"),
+		filepath.Join(home, ".claude", "skills"),
+	}
 }
 
 // discover lists the skills in srcs, the first source winning a name.
-func discover(srcs []string) ([]Skill, []string) {
+func discover(srcs []string) []Skill {
 	r := resolver{sources: srcs, chosen: map[string]Skill{}}
 	r.all()
 	out := make([]Skill, 0, len(r.chosen))
@@ -422,7 +458,7 @@ func discover(srcs []string) ([]Skill, []string) {
 		out = append(out, s)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-	return out, r.warnings
+	return out
 }
 
 const invalidNameReason = "not a valid skill name (lowercase letters and digits separated by single hyphens, at most 64 characters)"

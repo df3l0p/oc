@@ -17,6 +17,8 @@ type env struct {
 
 func newEnv(t *testing.T) env {
 	t.Helper()
+	// Discovery reads this variable; a developer's own must not leak in.
+	t.Setenv("OPENCODE_CONFIG_DIR", "")
 	root := t.TempDir()
 	// Resolved, so the paths Resolve reports (symlinks resolved) compare equal
 	// on systems where the temp dir is itself behind a symlink (macOS).

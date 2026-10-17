@@ -213,6 +213,76 @@ func TestCommandNamesKeepsUnrelatedSkills(t *testing.T) {
 	}
 }
 
+func TestMergeConfigContent(t *testing.T) {
+	existing := `{"model":"a/b","commands":{"mine":{"template":"keep"},"alpha":{"template":"theirs"}}}`
+	out, err := mergeConfigContent(existing, []string{"alpha", "beta"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Model    string
+		Commands map[string]commandDef
+	}
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, out)
+	}
+	if got.Model != "a/b" {
+		t.Errorf("model = %q, want the user's a/b", got.Model)
+	}
+	if got.Commands["mine"].Template != "keep" {
+		t.Errorf("the user's /mine changed: %s", out)
+	}
+	if got.Commands["alpha"].Template != "theirs" {
+		t.Errorf("the user's own /alpha was replaced: %s", out)
+	}
+	if got.Commands["beta"] != newCommandDef("beta") {
+		t.Errorf("/beta wasn't added: %s", out)
+	}
+}
+
+func TestMergeConfigContentIntoConfigsWithoutCommands(t *testing.T) {
+	for _, existing := range []string{`{}`, `null`, `{"commands":null}`, `{"model":"a/b"}`} {
+		out, err := mergeConfigContent(existing, []string{"alpha"})
+		if err != nil {
+			t.Errorf("%s: %v", existing, err)
+			continue
+		}
+		var got struct{ Commands map[string]commandDef }
+		if err := json.Unmarshal([]byte(out), &got); err != nil || got.Commands["alpha"] != newCommandDef("alpha") {
+			t.Errorf("%s: merged = %s (%v), want /alpha added", existing, out, err)
+		}
+	}
+}
+
+func TestParseInlineRejectsWhatItCannotRead(t *testing.T) {
+	for _, bad := range []string{``, `// c\n{}`, `{"a":1,}`, `[]`, `"x"`, `{"commands":"nope"}`, `{"commands":[]}`} {
+		if _, _, err := parseInline(bad); err == nil {
+			t.Errorf("parseInline(%q) succeeded, want an error", bad)
+		}
+	}
+}
+
+func TestCommandNamesSkipsCommandsInTheScopesExtra(t *testing.T) {
+	scope := commandScope{cwd: t.TempDir(), extra: map[string]string{"alpha": "OPENCODE_CONFIG_CONTENT"}}
+	got, warns := commandNames(scope, []string{"alpha", "beta"})
+	if strings.Join(got, ",") != "beta" {
+		t.Errorf("kept %q, want beta", strings.Join(got, ","))
+	}
+	if len(warns) != 1 || !strings.Contains(warns[0], "OPENCODE_CONFIG_CONTENT") || !strings.Contains(warns[0], "/alpha") {
+		t.Errorf("warnings = %q, want one naming OPENCODE_CONFIG_CONTENT and /alpha", warns)
+	}
+}
+
+func TestWithEnvReplacesInsteadOfDuplicating(t *testing.T) {
+	env := withEnv([]string{"A=1", "K=old", "K_OTHER=keep", "K=older"}, "K", "new")
+	if v, n := envValue(env, "K"); v != "new" || n != 1 {
+		t.Errorf("K = %q (%d entries), want exactly one, new", v, n)
+	}
+	if !hasEnv(env, "A=1") || !hasEnv(env, "K_OTHER=keep") {
+		t.Errorf("env = %q, want the other entries kept (K_OTHER shares only a prefix)", env)
+	}
+}
+
 func TestWriteCommandFiles(t *testing.T) {
 	dir := t.TempDir()
 	if err := writeCommandFiles(dir, []string{"alpha", "beta"}); err != nil {

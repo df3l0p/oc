@@ -732,28 +732,109 @@ func TestStageConfigHomeHasTheMountPointsAndIsTheUsers(t *testing.T) {
 	}
 }
 
-func TestAddSkillCommandsWritesFilesAndSkipsProjectCollisions(t *testing.T) {
+func TestSkillCommandsCoverAttachedAndProjectSkillsAndSkipProjectCollisions(t *testing.T) {
 	s := newSandbox(Options{Sandbox: true, Skills: []skills.Skill{
 		{Name: "alpha", Dir: "/host/alpha"},
 		{Name: "beta", Dir: "/host/beta"},
 	}}, "")
 	cwd := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(cwd, ".opencode", "commands"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(cwd, ".opencode", "commands", "beta.md"), []byte("project"), 0o644); err != nil {
-		t.Fatal(err)
+	// beta has a command of the project's own; proj is a project skill, and
+	// alpha is both attached and in the project (one command, not two).
+	writeFile(t, filepath.Join(cwd, ".opencode", "commands", "beta.md"), "project")
+	mkSkill(t, filepath.Join(cwd, ".opencode", "skills"), "proj")
+	mkSkill(t, filepath.Join(cwd, ".opencode", "skills"), "alpha")
+
+	names := s.skillCommandNames(cwd)
+	if strings.Join(names, ",") != "alpha,proj" {
+		t.Fatalf("names = %q, want alpha,proj", names)
 	}
 	home := t.TempDir()
-	s.addSkillCommands(home, cwd)
-	raw, err := os.ReadFile(filepath.Join(home, "opencode", "commands", "alpha.md"))
-	if err != nil {
-		t.Fatalf("reading alpha command: %v", err)
-	}
-	if string(raw) != commandMarkdown("alpha") {
-		t.Errorf("alpha command = %q, want %q", raw, commandMarkdown("alpha"))
+	s.writeSkillCommands(home, names)
+	for _, n := range names {
+		raw, err := os.ReadFile(filepath.Join(home, "opencode", "commands", n+".md"))
+		if err != nil {
+			t.Fatalf("reading %s command: %v", n, err)
+		}
+		if string(raw) != commandMarkdown(n) {
+			t.Errorf("%s command = %q, want %q", n, raw, commandMarkdown(n))
+		}
 	}
 	if _, err := os.Stat(filepath.Join(home, "opencode", "commands", "beta.md")); err == nil {
 		t.Errorf("a beta command was written although the project defines one")
+	}
+}
+
+func TestSkillCommandsIgnoreHostAncestorsOfTheWorkdir(t *testing.T) {
+	s := newSandbox(Options{Sandbox: true}, "")
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, ".git", "HEAD"), "x")
+	mkSkill(t, filepath.Join(repo, ".opencode", "skills"), "parent-skill")
+	cwd := filepath.Join(repo, "sub")
+	mkSkill(t, filepath.Join(cwd, ".opencode", "skills"), "here")
+
+	// Only the workdir is mounted in the container, so the repository root's
+	// skills aren't there to load.
+	if names := s.skillCommandNames(cwd); strings.Join(names, ",") != "here" {
+		t.Errorf("names = %q, want only here", names)
+	}
+}
+
+func TestSandboxRunStagesConfigHomeForProjectSkillCommandsWithoutSkillFlags(t *testing.T) {
+	logPath := fakeDockerProxy(t, nil, nil)
+	t.Setenv("TMPDIR", t.TempDir())
+	s := newSandbox(Options{Sandbox: true}, filepath.Join(t.TempDir(), "absent.jsonc"))
+	if err := s.Configure("llama-cpp", "http://127.0.0.1:8080", []string{"m"}); err != nil {
+		t.Fatal(err)
+	}
+	s.image, s.proxyImage = "rnes-sandbox-default:test", "rnes-sandbox-proxy:test"
+	workdir := t.TempDir()
+	mkSkill(t, filepath.Join(workdir, ".opencode", "skills"), "proj")
+
+	if err := s.Run(workdir, "llama-cpp", "m"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if s.configHome == "" {
+		t.Fatalf("no ~/.config was staged although the project has a skill to give a command")
+	}
+	var ran bool
+	for _, c := range calls(t, logPath) {
+		if !strings.HasPrefix(c, "run --rm") {
+			continue
+		}
+		ran = true
+		if !strings.Contains(c, "source="+s.configHome+",target=/home/rnes/.config") {
+			t.Errorf("the run doesn't mount the staged ~/.config: %s", c)
+		}
+		if strings.Contains(c, "/opencode/skills/") {
+			t.Errorf("no skill was attached, so none should be mounted: %s", c)
+		}
+	}
+	if !ran {
+		t.Fatal("no docker run call was made")
+	}
+	if _, err := os.Stat(s.configHome); !os.IsNotExist(err) {
+		t.Errorf("the staging directory must be removed after Run, stat err = %v", err)
+	}
+}
+
+func TestSandboxRunStagesNothingWithoutSkillsOrSkillCommands(t *testing.T) {
+	logPath := fakeDockerProxy(t, nil, nil)
+	t.Setenv("TMPDIR", t.TempDir())
+	s := newSandbox(Options{Sandbox: true}, filepath.Join(t.TempDir(), "absent.jsonc"))
+	if err := s.Configure("llama-cpp", "http://127.0.0.1:8080", []string{"m"}); err != nil {
+		t.Fatal(err)
+	}
+	s.image, s.proxyImage = "rnes-sandbox-default:test", "rnes-sandbox-proxy:test"
+
+	if err := s.Run(t.TempDir(), "llama-cpp", "m"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if s.configHome != "" {
+		t.Errorf("configHome = %q, want none: a session with nothing to stage must be unchanged", s.configHome)
+	}
+	for _, c := range calls(t, logPath) {
+		if strings.HasPrefix(c, "run --rm") && strings.Contains(c, ".config") {
+			t.Errorf("the run mentions ~/.config although nothing was staged: %s", c)
+		}
 	}
 }

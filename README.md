@@ -288,25 +288,37 @@ rnes -sandbox -skills-dir ~/team-skills -skill deploy
   writes to `~/.config/opencode`), the container's `~/.config` is then a
   private, per-session directory under `$TMPDIR` that rnes removes when the
   session ends; anything an image puts in `~/.config` itself is hidden while
-  skills are attached (the bundled images put nothing there).
+  skills are attached or skill commands are generated (the bundled images put
+  nothing there). A session with neither keeps the image's `~/.config`.
 - **Skill commands:** so a skill can be invoked explicitly, like Claude's
   `/skill`, rnes generates a `/<name>` command per skill — on the host, for
-  the project's own skills and the global ones; in the sandbox, for the
-  attached skills and the project's (which the container sees through the
-  mounted workdir). The command loads the skill and follows it; arguments are
-  appended to the prompt. On the host the commands travel in opencode's
-  `OPENCODE_CONFIG_CONTENT` environment variable, merged over your own config,
-  so nothing is ever written to your `~/.config` — and because a running
-  opencode service only reads that variable at startup, a session with
-  commands runs opencode against its own server (`--standalone`) instead of
-  the shared background one. In the sandbox the commands are files in the
-  session's staged `~/.config/opencode/commands`, next to the mounted skills.
-  A name opencode already has a command for is skipped with a warning, so the
-  existing command keeps working: a built-in one (`/models`, `/undo`, …), one
-  the project defines (`.opencode/commands/<name>.md`, a config `commands`
-  entry, or the same in an ancestor directory, since opencode discovers
-  those), or — on the host — one of your global commands. The skill itself is
-  unaffected: the agent can still load it by name.
+  the project's own skills (the working directory and each parent up to the
+  repository root) and the global ones; in the sandbox, for the attached
+  skills and the project's (the working directory only, which is all the
+  container mounts). The command loads the skill and follows it; arguments
+  are appended to the prompt. Discovery reads the `skills` folders and
+  opencode's legacy `skill` ones, and, being automatic, skips anything that
+  isn't a valid skill folder without a word (`-skill all` reports those). It
+  is narrower than opencode's: flat `skills/<name>.md` files, `SKILL.md`
+  files nested deeper, and folder names that aren't valid skill names get no
+  command, though opencode may still load them. On the host the commands
+  travel in opencode's `OPENCODE_CONFIG_CONTENT` environment variable, merged
+  over your own config, so nothing is ever written to your `~/.config` — and
+  because a running opencode service only reads that variable at startup, a
+  session with commands runs opencode against its own server (`--standalone`)
+  instead of the shared background one. If you already export
+  `OPENCODE_CONFIG_CONTENT`, rnes merges into it and your settings and
+  commands win; if it isn't a plain JSON object (comments, say), rnes leaves
+  it alone and generates no commands. In the sandbox the commands are files in
+  the session's staged `~/.config/opencode/commands`, next to the mounted
+  skills. A name opencode already has a command for is skipped with a
+  warning, so the existing command keeps working: a built-in one (`/models`,
+  `/undo`, …), one the project defines (`.opencode/commands/<name>.md`, a
+  config `commands` entry, or the same in an ancestor directory, since
+  opencode discovers those), or — on the host — one of your global commands
+  (in `OPENCODE_CONFIG_DIR` when that is set) or in your own
+  `OPENCODE_CONFIG_CONTENT`. The skill itself is unaffected: the agent can
+  still load it by name.
 - **Output:** `rnes` prints one line listing the attached skills and the folder
   each came from; warnings go to stderr as `rnes: warning: …`. More than 50
   skills (one mount each) prints a warning, as does `-skill all` finding

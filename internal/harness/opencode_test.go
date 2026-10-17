@@ -57,19 +57,61 @@ func TestNewOpencodeUsesHomeConfigDir(t *testing.T) {
 	}
 }
 
-func TestOpencodeLaunchWithSkillCommands(t *testing.T) {
-	home := t.TempDir()
+// hostSession is a fake host for launch: HOME, an opencode that has the
+// given global config path, and none of the variables launch reads, so a
+// developer's own environment can't change what the tests see.
+func hostSession(t *testing.T) (home string, o Opencode) {
+	t.Helper()
+	home = t.TempDir()
 	t.Setenv("HOME", home)
-	configPath := filepath.Join(home, ".config", "opencode", "opencode.jsonc")
-	o := Opencode{configPath: configPath}
+	unsetenv(t, "OPENCODE_CONFIG_CONTENT")
+	unsetenv(t, "OPENCODE_CONFIG_DIR")
+	return home, Opencode{configPath: filepath.Join(home, ".config", "opencode", "opencode.jsonc")}
+}
+
+// unsetenv removes key for the test and restores it afterwards. t.Setenv can
+// only set: an empty value would still be an entry in os.Environ.
+func unsetenv(t *testing.T, key string) {
+	t.Helper()
+	old, had := os.LookupEnv(key)
+	os.Unsetenv(key)
+	t.Cleanup(func() {
+		if had {
+			os.Setenv(key, old)
+		} else {
+			os.Unsetenv(key)
+		}
+	})
+}
+
+// mkSkill creates dir/name/SKILL.md.
+func mkSkill(t *testing.T, dir, name string) {
+	t.Helper()
+	writeFile(t, filepath.Join(dir, name, "SKILL.md"), "x")
+}
+
+// envValue is the value of key in env, and how many entries name it.
+func envValue(env []string, key string) (string, int) {
+	var val string
+	n := 0
+	for _, e := range env {
+		if strings.HasPrefix(e, key+"=") {
+			val, n = strings.TrimPrefix(e, key+"="), n+1
+		}
+	}
+	return val, n
+}
+
+func TestOpencodeLaunchWithSkillCommands(t *testing.T) {
+	home, o := hostSession(t)
 
 	// No skills in the default folders: the plain launch, no environment.
 	args, env := o.launch(t.TempDir())
 	if len(args) != 1 || args[0] != "." {
 		t.Errorf("args = %q, want [.] (the launch must be unchanged)", args)
 	}
-	if !hasEnv(env, "OPENCODE_CONFIG="+configPath) {
-		t.Errorf("env = %q, want OPENCODE_CONFIG=%s", env, configPath)
+	if !hasEnv(env, "OPENCODE_CONFIG="+o.configPath) {
+		t.Errorf("env = %q, want OPENCODE_CONFIG=%s", env, o.configPath)
 	}
 	if hasEnvPrefix(env, "OPENCODE_CONFIG_CONTENT=") {
 		t.Errorf("env = %q, want no OPENCODE_CONFIG_CONTENT", env)
@@ -78,22 +120,10 @@ func TestOpencodeLaunchWithSkillCommands(t *testing.T) {
 	// Two skills, one shadowed by a project command: the session runs on its
 	// own server (--standalone), with the commands in OPENCODE_CONFIG_CONTENT.
 	skillsDir := filepath.Join(home, ".config", "opencode", "skills")
-	for _, n := range []string{"alpha", "beta"} {
-		p := filepath.Join(skillsDir, n)
-		if err := os.MkdirAll(p, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(p, "SKILL.md"), []byte("x"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
+	mkSkill(t, skillsDir, "alpha")
+	mkSkill(t, skillsDir, "beta")
 	cwd := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(cwd, ".opencode", "commands"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(cwd, ".opencode", "commands", "beta.md"), []byte("project"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeFile(t, filepath.Join(cwd, ".opencode", "commands", "beta.md"), "project")
 	args, env = o.launch(cwd)
 	if len(args) != 2 || args[0] != "--standalone" || args[1] != "." {
 		t.Errorf("args = %q, want [--standalone .]", args)
@@ -101,6 +131,92 @@ func TestOpencodeLaunchWithSkillCommands(t *testing.T) {
 	want := "OPENCODE_CONFIG_CONTENT=" + configContent([]string{"alpha"})
 	if !hasEnv(env, want) {
 		t.Errorf("env = %q, want %q (beta is the project's own command)", env, want)
+	}
+}
+
+func TestOpencodeLaunchGeneratesCommandsForProjectSkills(t *testing.T) {
+	_, o := hostSession(t)
+	// The project's skills come from the repository root down to the working
+	// directory, as opencode loads them.
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, ".git", "HEAD"), "ref: refs/heads/main")
+	mkSkill(t, filepath.Join(repo, ".opencode", "skills"), "from-root")
+	cwd := filepath.Join(repo, "packages", "web")
+	mkSkill(t, filepath.Join(cwd, ".claude", "skills"), "from-here")
+
+	_, env := o.launch(cwd)
+	want := "OPENCODE_CONFIG_CONTENT=" + configContent([]string{"from-here", "from-root"})
+	if !hasEnv(env, want) {
+		t.Errorf("env = %q, want %q", env, want)
+	}
+}
+
+func TestOpencodeLaunchChecksGlobalCommandsInOpencodeConfigDir(t *testing.T) {
+	home, o := hostSession(t)
+	mkSkill(t, filepath.Join(home, ".agents", "skills"), "alpha")
+	mkSkill(t, filepath.Join(home, ".agents", "skills"), "beta")
+
+	// The user's global commands live in the default directory...
+	writeFile(t, filepath.Join(home, ".config", "opencode", "commands", "alpha.md"), "mine")
+	// ...unless OPENCODE_CONFIG_DIR replaces it.
+	custom := t.TempDir()
+	writeFile(t, filepath.Join(custom, "commands", "beta.md"), "mine")
+	t.Setenv("OPENCODE_CONFIG_DIR", custom)
+
+	_, env := o.launch(t.TempDir())
+	want := "OPENCODE_CONFIG_CONTENT=" + configContent([]string{"alpha"})
+	if !hasEnv(env, want) {
+		t.Errorf("env = %q, want %q (beta is a global command in OPENCODE_CONFIG_DIR)", env, want)
+	}
+}
+
+func TestOpencodeLaunchMergesIntoTheUsersInlineConfig(t *testing.T) {
+	home, o := hostSession(t)
+	skillsDir := filepath.Join(home, ".config", "opencode", "skills")
+	mkSkill(t, skillsDir, "alpha")
+	mkSkill(t, skillsDir, "beta")
+	mine := `{"model":"a/b","permissions":[{"action":"shell","resource":"rm *","effect":"deny"}],"commands":{"beta":{"template":"mine"}}}`
+	t.Setenv("OPENCODE_CONFIG_CONTENT", mine)
+
+	args, env := o.launch(t.TempDir())
+	if len(args) != 2 || args[0] != "--standalone" {
+		t.Errorf("args = %q, want [--standalone .]", args)
+	}
+	got, n := envValue(env, "OPENCODE_CONFIG_CONTENT")
+	if n != 1 {
+		t.Fatalf("env has %d OPENCODE_CONFIG_CONTENT entries, want exactly one", n)
+	}
+	var cfg struct {
+		Model       string
+		Permissions []map[string]string
+		Commands    map[string]commandDef
+	}
+	if err := json.Unmarshal([]byte(got), &cfg); err != nil {
+		t.Fatalf("merged content isn't JSON: %v\n%s", err, got)
+	}
+	if cfg.Model != "a/b" || len(cfg.Permissions) != 1 || cfg.Permissions[0]["effect"] != "deny" {
+		t.Errorf("the user's own settings were lost: %s", got)
+	}
+	if cfg.Commands["beta"].Template != "mine" {
+		t.Errorf("the user's own /beta was replaced: %s", got)
+	}
+	if cfg.Commands["alpha"] != newCommandDef("alpha") {
+		t.Errorf("/alpha wasn't added: %s", got)
+	}
+}
+
+func TestOpencodeLaunchLeavesAnUnreadableInlineConfigAlone(t *testing.T) {
+	home, o := hostSession(t)
+	mkSkill(t, filepath.Join(home, ".config", "opencode", "skills"), "alpha")
+	for _, bad := range []string{"// comment\n{}", `["not","an","object"]`, `{"commands":"nope"}`} {
+		t.Setenv("OPENCODE_CONFIG_CONTENT", bad)
+		args, env := o.launch(t.TempDir())
+		if len(args) != 1 || args[0] != "." {
+			t.Errorf("%q: args = %q, want the plain launch", bad, args)
+		}
+		if got, n := envValue(env, "OPENCODE_CONFIG_CONTENT"); got != bad || n != 1 {
+			t.Errorf("%q: env value = %q (%d entries), want the user's value untouched", bad, got, n)
+		}
 	}
 }
 
