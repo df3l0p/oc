@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 
 	"github.com/df3l0p/rnes/images"
@@ -545,18 +546,34 @@ func stageConfigHome(attached []skills.Skill) (string, error) {
 	return dir, nil
 }
 
-// addSkillCommands writes a /<name> command file per attached skill into
-// the staged ~/.config (see opencode_commands.go), so the session can invoke
-// them like host commands. A skill whose name the project (cwd, mounted at
-// containerWorkdir) already uses for a command is skipped with a warning;
-// project commands win in the container anyway. A failed write warns but
-// doesn't stop the session: the skills themselves still work.
+// addSkillCommands writes a /<name> command file per skill the sandbox has —
+// the attached ones plus the project's own, which come through the mounted
+// workdir — into the staged ~/.config (see opencode_commands.go), so the
+// session can invoke them like host commands. A skill whose name the project
+// already uses for a command is skipped with a warning; project commands win
+// in the container anyway. Only cwd is checked, not its ancestors: only the
+// workdir is mounted, so host ancestors are not visible in the container. A
+// failed write warns but doesn't stop the session: the skills themselves
+// still work.
 func (s *Sandbox) addSkillCommands(home, cwd string) {
 	names := make([]string, 0, len(s.skills))
+	seen := make(map[string]bool, len(s.skills))
 	for _, sk := range s.skills {
 		names = append(names, sk.Name)
+		seen[sk.Name] = true
 	}
-	names, warnings := commandNames(cwd, names)
+	project, warns := skills.DiscoverProject(cwd)
+	for _, w := range warns {
+		fmt.Fprintf(os.Stderr, "rnes: warning: %s\n", w)
+	}
+	for _, sk := range project {
+		if !seen[sk.Name] {
+			names = append(names, sk.Name)
+			seen[sk.Name] = true
+		}
+	}
+	sort.Strings(names)
+	names, warnings := commandNames(commandScope{cwd: cwd, stop: cwd}, names)
 	for _, w := range warnings {
 		fmt.Fprintf(os.Stderr, "rnes: warning: %s\n", w)
 	}

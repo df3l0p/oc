@@ -364,17 +364,57 @@ func (r *resolver) all() {
 	}
 }
 
-// DiscoverAll lists every skill in the default sources, the first source
-// winning a name: the skills a host session (no sandbox, no -skill flags)
-// has available for command generation. Invalid entries are skipped with a
-// warning, like -skill all.
-func DiscoverAll(home string) ([]Skill, []string) {
-	var srcs []string
-	for _, d := range DefaultSources(home) {
+// DiscoverProject lists the skills the project at cwd defines, in its
+// .opencode/skills, .claude/skills and .agents/skills folders. Invalid
+// entries are skipped with a warning, like -skill all.
+func DiscoverProject(cwd string) ([]Skill, []string) {
+	return discover(projectSources(cwd))
+}
+
+// DiscoverAll lists every skill a host session in cwd has available: the
+// project's own skills first (they outrank global ones in opencode), then the
+// default global folders. The first source wins a name. Invalid entries are
+// skipped with a warning, like -skill all.
+func DiscoverAll(home, cwd string) ([]Skill, []string) {
+	srcs := projectSources(cwd)
+	for _, d := range globalSources(home) {
 		if fi, err := os.Stat(d); err == nil && fi.IsDir() {
 			srcs = append(srcs, d)
 		}
 	}
+	return discover(srcs)
+}
+
+// projectSources are the project's skill folders that exist, in opencode's
+// precedence order.
+func projectSources(cwd string) []string {
+	var out []string
+	for _, d := range projectDirs {
+		p := filepath.Join(cwd, d)
+		if fi, err := os.Stat(p); err == nil && fi.IsDir() {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// globalSources are the host folders opencode reads global skills from, in
+// precedence order. OPENCODE_CONFIG_DIR replaces opencode's global config
+// directory, and so its skills folder, but not the .agents and .claude
+// compatibility folders.
+func globalSources(home string) []string {
+	if dir := os.Getenv("OPENCODE_CONFIG_DIR"); dir != "" {
+		return []string{
+			filepath.Join(dir, "skills"),
+			filepath.Join(home, ".agents", "skills"),
+			filepath.Join(home, ".claude", "skills"),
+		}
+	}
+	return DefaultSources(home)
+}
+
+// discover lists the skills in srcs, the first source winning a name.
+func discover(srcs []string) ([]Skill, []string) {
 	r := resolver{sources: srcs, chosen: map[string]Skill{}}
 	r.all()
 	out := make([]Skill, 0, len(r.chosen))

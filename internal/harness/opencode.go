@@ -111,7 +111,7 @@ func (o Opencode) launch(dir string) ([]string, []string) {
 		fmt.Fprintf(os.Stderr, "rnes: warning: no skill commands: resolving home directory: %v\n", err)
 		return []string{"."}, env
 	}
-	found, warns := skills.DiscoverAll(home)
+	found, warns := skills.DiscoverAll(home, dir)
 	for _, w := range warns {
 		fmt.Fprintf(os.Stderr, "rnes: warning: %s\n", w)
 	}
@@ -119,7 +119,7 @@ func (o Opencode) launch(dir string) ([]string, []string) {
 	for _, s := range found {
 		names = append(names, s.Name)
 	}
-	names, warns = commandNames(dir, names)
+	names, warns = commandNames(commandScope{cwd: dir, globalDir: filepath.Dir(o.configPath)}, names)
 	for _, w := range warns {
 		fmt.Fprintf(os.Stderr, "rnes: warning: %s\n", w)
 	}

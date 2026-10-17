@@ -25,7 +25,7 @@ func TestDiscoverAll(t *testing.T) {
 	}
 	e.write(filepath.Join(".config", "opencode", "skills", "loose.md"), "x")
 
-	got, warns := DiscoverAll(e.home)
+	got, warns := DiscoverAll(e.home, e.cwd)
 	if names(got) != "alpha,beta,gamma" {
 		t.Errorf("DiscoverAll = %v, want alpha,beta,gamma", names(got))
 	}
@@ -45,7 +45,7 @@ func TestDiscoverAll(t *testing.T) {
 
 func TestDiscoverAllWithNoFoldersIsEmpty(t *testing.T) {
 	e := newEnv(t)
-	got, warns := DiscoverAll(e.home)
+	got, warns := DiscoverAll(e.home, e.cwd)
 	if len(got) != 0 || len(warns) != 0 {
 		t.Errorf("DiscoverAll = %v, %v; want nothing", names(got), warns)
 	}
@@ -64,5 +64,42 @@ func (e env) write(rel, content string) {
 	}
 	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
 		e.t.Fatal(err)
+	}
+}
+
+func TestDiscoverAllPrefersProjectSkills(t *testing.T) {
+	e := newEnv(t)
+	// The project's own skill wins over the global one of the same name, as
+	// in opencode's precedence.
+	e.skill(e.opencode(), "shared")
+	e.skill(filepath.Join(e.cwd, ".opencode", "skills"), "shared")
+	e.skill(filepath.Join(e.cwd, ".claude", "skills"), "local")
+
+	got, warns := DiscoverAll(e.home, e.cwd)
+	if names(got) != "local,shared" {
+		t.Errorf("DiscoverAll = %v, want local,shared", names(got))
+	}
+	if got[1].Source != filepath.Join(e.cwd, ".opencode", "skills") {
+		t.Errorf("shared's source = %q, want the project's folder", got[1].Source)
+	}
+	if len(warns) != 1 || !strings.Contains(warns[0], "shared") || !strings.Contains(warns[0], "shadowing") {
+		t.Errorf("warnings = %q, want one about the shadowed global shared skill", warns)
+	}
+}
+
+func TestDiscoverAllHonorsOpencodeConfigDir(t *testing.T) {
+	e := newEnv(t)
+	custom := filepath.Join(e.home, "custom-config")
+	e.skill(filepath.Join(custom, "skills"), "custom")
+	// The default global folder is ignored while OPENCODE_CONFIG_DIR is set,
+	// since opencode reads skills from the configured directory instead.
+	e.skill(e.opencode(), "default")
+	// The compatibility folders are still read.
+	e.skill(e.claude(), "compat")
+	t.Setenv("OPENCODE_CONFIG_DIR", custom)
+
+	got, _ := DiscoverAll(e.home, e.cwd)
+	if names(got) != "compat,custom" {
+		t.Errorf("DiscoverAll = %v, want compat,custom", names(got))
 	}
 }

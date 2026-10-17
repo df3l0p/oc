@@ -24,7 +24,9 @@ package harness
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -65,19 +67,47 @@ func configContent(names []string) string {
 	return string(out)
 }
 
-// commandNames picks the names worth a generated command. One the project
-// at cwd already defines as a command is dropped with a warning: on the
-// host the generated commands merge above every file-based config and
-// would override the project's own command, so rnes leaves it alone (the
-// sandbox's generated commands rank below project commands anyway, but the
-// skip keeps both places behaving the same). The skill itself is unaffected;
-// the agent can still load it by name.
-func commandNames(cwd string, names []string) ([]string, []string) {
-	proj := projectCommands(cwd)
-	var out, warnings []string
+// builtinCommands are opencode's own slash commands (see the TUI docs); a
+// generated command would replace them, so they are skipped. Not exhaustive:
+// keep in sync with https://opencode.ai/v2/docs/cli/tui/.
+var builtinCommands = map[string]bool{
+	"agents": true, "btw": true, "compact": true, "editor": true,
+	"help": true, "highlights": true, "mcps": true, "models": true,
+	"new": true, "redo": true, "sessions": true, "undo": true,
+}
+
+// commandScope is where a session's opencode can see existing commands from,
+// for the collision check.
+type commandScope struct {
+	// cwd is the session's working directory.
+	cwd string
+	// stop is the topmost directory to inspect; "" walks to the filesystem
+	// root, matching opencode's config discovery. The sandbox passes cwd:
+	// only the workdir is mounted, so host ancestors are not visible there.
+	stop string
+	// globalDir is the user's opencode config directory; "" when the session
+	// cannot see it (the sandbox's staged ~/.config hides it).
+	globalDir string
+}
+
+// commandNames picks the names worth a generated command. A name opencode
+// already has a command for is dropped with a warning: a built-in one (which
+// the generated command would replace), one the project at cwd defines
+// (including its ancestors, since opencode discovers those too), or — when
+// the scope includes it — one the user's global commands define. The
+// generated commands merge above every file-based source on the host, so
+// leaving those alone keeps them working. The skill itself is unaffected; the
+// agent can still load it by name.
+func commandNames(scope commandScope, names []string) ([]string, []string) {
+	defined, warnings := commandsVisibleTo(scope)
+	var out []string
 	for _, n := range names {
-		if p, ok := proj[n]; ok {
-			warnings = append(warnings, fmt.Sprintf("skill command /%s skipped: the project already defines a command with that name (%s); the skill itself is still available to the agent", n, p))
+		if builtinCommands[n] {
+			warnings = append(warnings, fmt.Sprintf("skill command /%s skipped: it would replace opencode's built-in /%s command; the skill itself is still available to the agent", n, n))
+			continue
+		}
+		if p, ok := defined[n]; ok {
+			warnings = append(warnings, fmt.Sprintf("skill command /%s skipped: %s already defines a command with that name; the skill itself is still available to the agent", n, p))
 			continue
 		}
 		out = append(out, n)
@@ -85,47 +115,110 @@ func commandNames(cwd string, names []string) ([]string, []string) {
 	return out, warnings
 }
 
-// projectCommands lists the commands the project at cwd defines, by name
-// with the file defining each: root-level .md files in .opencode/commands
-// (and the legacy .opencode/command), plus the commands map of the project's
-// opencode.json(c). Nested files name commands with a "/" separator, which a
-// skill name never contains, so they cannot collide. Only cwd is searched,
-// not its ancestors, so the check is about this session's directory; a
-// JSONC file with comments fails plain JSON parsing and is skipped.
-func projectCommands(cwd string) map[string]string {
+// commandsVisibleTo lists the commands the session's opencode has, by name
+// with the file defining each: project command files and configs from cwd up
+// to scope.stop, plus the global config directory when the scope has one.
+func commandsVisibleTo(scope commandScope) (map[string]string, []string) {
 	out := map[string]string{}
-	for _, sub := range []string{"commands", "command"} {
-		dir := filepath.Join(cwd, ".opencode", sub)
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			continue
-		}
-		for _, e := range entries {
-			name := e.Name()
-			if !e.Type().IsRegular() || !strings.HasSuffix(name, ".md") || strings.HasPrefix(name, ".") {
-				continue
+	var warnings []string
+	for dir := scope.cwd; ; dir = filepath.Dir(dir) {
+		addCommands(out, commandFiles(filepath.Join(dir, ".opencode", "commands")))
+		addCommands(out, commandFiles(filepath.Join(dir, ".opencode", "command")))
+		for _, f := range []string{
+			filepath.Join(dir, "opencode.json"), filepath.Join(dir, "opencode.jsonc"),
+			filepath.Join(dir, ".opencode", "opencode.json"), filepath.Join(dir, ".opencode", "opencode.jsonc"),
+		} {
+			cmds, err := configCommands(f)
+			if err != nil {
+				warnings = append(warnings, unreadableConfig(f, err))
 			}
-			out[strings.TrimSuffix(name, ".md")] = filepath.Join(dir, name)
+			addCommands(out, cmds)
+		}
+		if dir == scope.stop {
+			break
+		}
+		if parent := filepath.Dir(dir); parent == dir {
+			break
 		}
 	}
-	configs := []string{"opencode.json", "opencode.jsonc",
-		filepath.Join(".opencode", "opencode.json"), filepath.Join(".opencode", "opencode.jsonc")}
-	for _, f := range configs {
-		raw, err := os.ReadFile(filepath.Join(cwd, f))
-		if err != nil {
+	if scope.globalDir != "" {
+		addCommands(out, commandFiles(filepath.Join(scope.globalDir, "commands")))
+		addCommands(out, commandFiles(filepath.Join(scope.globalDir, "command")))
+		for _, f := range []string{
+			filepath.Join(scope.globalDir, "opencode.json"),
+			filepath.Join(scope.globalDir, "opencode.jsonc"),
+		} {
+			cmds, err := configCommands(f)
+			if err != nil {
+				warnings = append(warnings, unreadableConfig(f, err))
+			}
+			addCommands(out, cmds)
+		}
+	}
+	return out, warnings
+}
+
+// unreadableConfig is the warning for a config file the collision check
+// couldn't parse: JSONC with comments or trailing commas is valid to opencode
+// but not to encoding/json.
+func unreadableConfig(path string, err error) string {
+	return fmt.Sprintf("couldn't read %s (%v): generated skill commands may shadow commands it defines", path, err)
+}
+
+// commandFiles lists the .md command files in dir by name, with the file
+// defining each. Symlinks are followed: opencode reads the file they point
+// at. Nested files name commands with a "/" separator, which a skill name
+// never contains, so they cannot collide.
+func commandFiles(dir string) map[string]string {
+	out := map[string]string{}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return out
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasSuffix(name, ".md") || strings.HasPrefix(name, ".") {
 			continue
 		}
-		var cfg struct {
-			Commands map[string]json.RawMessage `json:"commands"`
-		}
-		if json.Unmarshal(raw, &cfg) != nil {
+		p := filepath.Join(dir, name)
+		if fi, err := os.Stat(p); err != nil || !fi.Mode().IsRegular() {
 			continue
 		}
-		for name := range cfg.Commands {
-			out[name] = filepath.Join(cwd, f)
-		}
+		out[strings.TrimSuffix(name, ".md")] = p
 	}
 	return out
+}
+
+// configCommands reads the commands map from an opencode config file. A
+// missing file is not an error.
+func configCommands(path string) (map[string]string, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var cfg struct {
+		Commands map[string]json.RawMessage `json:"commands"`
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return nil, err
+	}
+	out := make(map[string]string, len(cfg.Commands))
+	for name := range cfg.Commands {
+		out[name] = path
+	}
+	return out, nil
+}
+
+// addCommands merges src into dst, keeping dst's (nearer) definitions.
+func addCommands(dst, src map[string]string) {
+	for name, p := range src {
+		if _, ok := dst[name]; !ok {
+			dst[name] = p
+		}
+	}
 }
 
 // writeCommandFiles writes a command markdown file per name into dir's
